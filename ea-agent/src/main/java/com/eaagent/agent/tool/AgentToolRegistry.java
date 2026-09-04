@@ -4,6 +4,8 @@ import com.eaagent.common.JsonUtils;
 import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionRegistry;
 import com.eaagent.ontology.action.ActionResult;
+import com.eaagent.ontology.function.Function;
+import com.eaagent.ontology.function.FunctionRegistry;
 import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.AudienceMemberMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
@@ -35,7 +37,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Agent 工具注册表（详细设计 4.2 的 9 工具 + applyAction）。
+ * Agent 工具注册表（详细设计 4.2 三件套）：5 个查询工具（Query Objects）+ applyAction
+ * （Apply Action，ActionRegistry 路由）+ callFunction（Call Function，FunctionRegistry 路由）。
  * 工具按租户实例化（forTenant），执行不依赖 ThreadLocal TenantContext（agentscope 线程无上下文）。
  */
 @Component
@@ -50,13 +53,15 @@ public class AgentToolRegistry {
     private final AudienceMapper audienceMapper;
     private final AudienceMemberMapper audienceMemberMapper;
     private final ActionRegistry actionRegistry;
+    private final FunctionRegistry functionRegistry;
     private final RuleEngine ruleEngine;
 
     public AgentToolRegistry(CustomerMapper customerMapper, CampaignMapper campaignMapper,
                              DeliveryMapper deliveryMapper, EventMapper eventMapper,
                              AudienceMapper audienceMapper,
                              AudienceMemberMapper audienceMemberMapper,
-                             ActionRegistry actionRegistry, RuleEngine ruleEngine) {
+                             ActionRegistry actionRegistry, FunctionRegistry functionRegistry,
+                             RuleEngine ruleEngine) {
         this.customerMapper = customerMapper;
         this.campaignMapper = campaignMapper;
         this.deliveryMapper = deliveryMapper;
@@ -64,6 +69,7 @@ public class AgentToolRegistry {
         this.audienceMapper = audienceMapper;
         this.audienceMemberMapper = audienceMemberMapper;
         this.actionRegistry = actionRegistry;
+        this.functionRegistry = functionRegistry;
         this.ruleEngine = ruleEngine;
     }
 
@@ -76,9 +82,8 @@ public class AgentToolRegistry {
     public List<AgentTool> forTenant(Long tenantId) {
         return List.of(
                 new QueryCustomers(tenantId), new QueryAudience(tenantId), new GetCampaign(tenantId),
-                new QueryDelivery(tenantId), new QueryEvents(tenantId), new AudienceStats(tenantId),
-                new FrequencyCheck(tenantId), new ChannelPreference(tenantId), new ChurnRiskScore(tenantId),
-                new ApplyAction(tenantId));
+                new QueryDelivery(tenantId), new QueryEvents(tenantId),
+                new ApplyAction(tenantId), new CallFunction(tenantId));
     }
 
     // ---------- 基础工具骨架 ----------
@@ -292,78 +297,37 @@ public class AgentToolRegistry {
         }
     }
 
-    /** audienceStats：人群统计。 */
-    class AudienceStats extends BaseTool {
-        AudienceStats(Long tenantId) {
-            super(tenantId, "audienceStats", "人群规模与构成统计",
-                    schema(Map.of("audience_id", pInt("人群包 ID")), List.of("audience_id")));
+    /** callFunction：咨询函数路由（4.2 Call Function，FunctionRegistry 注册表）。 */
+    class CallFunction extends BaseTool {
+        CallFunction(Long tenantId) {
+            super(tenantId, "callFunction", describeFunctions(),
+                    schema(Map.of("name", pStr("函数名（registered " + functionRegistry.all().size() + " 选一）"),
+                                    "args", pObj("函数参数对象（按函数要求传字段）")),
+                            List.of("name", "args")));
         }
 
         @Override
         protected Map<String, Object> execute(Map<String, Object> input) {
-            long id = Long.parseLong(String.valueOf(input.get("audience_id")));
-            Long memberCount = audienceMemberMapper.selectCount(new QueryWrapper<AudienceMemberEntity>()
-                    .eq(AudienceMemberEntity.COL_TENANT_ID, tenantId)
-                    .eq(AudienceMemberEntity.COL_AUDIENCE_ID, id));
-            return Map.of("audience_id", id, "member_count", memberCount);
-        }
-    }
-
-    /** frequencyCheck：频控/冷却检查。 */
-    class FrequencyCheck extends BaseTool {
-        FrequencyCheck(Long tenantId) {
-            super(tenantId, "frequencyCheck", "检查客户在指定通道的发送频控与冷却状态",
-                    schema(Map.of("customer_id", pInt("客户 ID"), "channel", pStr("通道类型")), List.of("customer_id", "channel")));
-        }
-
-        @Override
-        protected Map<String, Object> execute(Map<String, Object> input) {
-            long cid = Long.parseLong(String.valueOf(input.get("customer_id")));
-            String channel = String.valueOf(input.get("channel"));
-            QueryWrapper<DeliveryEntity> w = new QueryWrapper<>();
-            w.eq(DeliveryEntity.COL_TENANT_ID, tenantId).eq(DeliveryEntity.COL_CUSTOMER_ID, cid).eq(DeliveryEntity.COL_CHANNEL, channel);
-            Long sentTotal = deliveryMapper.selectCount(w);
-            return Map.of("customer_id", cid, "channel", channel, "sent_total", sentTotal,
-                    "cooling_active", "ea:cd:" + tenantId + ":" + cid);
-        }
-    }
-
-    /** channelPreference：偏好通道。 */
-    class ChannelPreference extends BaseTool {
-        ChannelPreference(Long tenantId) {
-            super(tenantId, "channelPreference", "读取客户偏好通道（attributes.preferred_channel）",
-                    schema(Map.of("customer_id", pInt("客户 ID")), List.of("customer_id")));
-        }
-
-        @Override
-        protected Map<String, Object> execute(Map<String, Object> input) {
-            long cid = Long.parseLong(String.valueOf(input.get("customer_id")));
-            CustomerEntity c = customerMapper.selectOne(new QueryWrapper<CustomerEntity>()
-                    .eq(CustomerEntity.COL_TENANT_ID, tenantId).eq(CustomerEntity.COL_ID, cid));
-            if (c == null) {
-                return Map.of("error", "customer not found");
+            String name = String.valueOf(input.get("name"));
+            Object rawArgs = input.get("args");
+            Map<String, Object> args;
+            if (rawArgs instanceof Map) {
+                args = (Map<String, Object>) rawArgs;
+            } else if (rawArgs == null) {
+                args = Map.of();
+            } else {
+                args = JsonUtils.toMap(String.valueOf(rawArgs));
             }
-            Map<String, Object> attrs = c.getAttributes() == null ? Map.of() : c.getAttributes();
-            return Map.of("customer_id", cid, "preferred_channel", attrs.getOrDefault("preferred_channel", "console"));
+            return functionRegistry.get(name).execute(tenantId, args);
         }
     }
 
-    /** churnRiskScore：流失风险启发式评分（演示实现，真实模型留后续）。 */
-    class ChurnRiskScore extends BaseTool {
-        ChurnRiskScore(Long tenantId) {
-            super(tenantId, "churnRiskScore", "流失风险评分 0-1（启发式：近 30 天事件越少风险越高）",
-                    schema(Map.of("customer_id", pInt("客户 ID")), List.of("customer_id")));
-        }
-
-        @Override
-        protected Map<String, Object> execute(Map<String, Object> input) {
-            long cid = Long.parseLong(String.valueOf(input.get("customer_id")));
-            QueryWrapper<EventEntity> w = new QueryWrapper<>();
-            w.eq(EventEntity.COL_TENANT_ID, tenantId).eq(EventEntity.COL_CUSTOMER_ID, cid);
-            Long events = eventMapper.selectCount(w);
-            double score = events == null || events == 0 ? 0.9 : Math.max(0.1, 1.0 - events / 5.0);
-            return Map.of("customer_id", cid, "score", Math.round(score * 100) / 100.0, "basis", "启发式:1-近30天事件数/5");
-        }
+    /** callFunction 工具描述：动态枚举注册函数（与 applyAction 枚举注册 Action 同构）。 */
+    private String describeFunctions() {
+        return "调用注册的咨询函数（决策建议，只读，无副作用；写操作请用 applyAction）。registered："
+                + functionRegistry.all().stream()
+                        .map(f -> f.name() + "（" + f.description() + "）")
+                        .collect(java.util.stream.Collectors.joining("、"));
     }
 
     /** applyAction：动作执行（设计 3.4）。 */

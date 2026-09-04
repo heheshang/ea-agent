@@ -387,13 +387,10 @@ public interface AgentTool {
 | getCampaign | campaign_id | 任务状态 |
 | queryDelivery | campaign_id / customer_id / status | 触达记录 |
 | queryEvents | customer_id / event_type / 时间窗 | 事件查询 |
-| audienceStats | audience_id / 维度 | 人群聚合统计 |
-| frequencyCheck | customer_id / channel | Redis 频控计数查询 |
-| channelPreference | customer_id | 画像偏好渠道 |
-| churnRiskScore | customer_id | 流失风险分（规则/模型函数） |
+| callFunction | name / args | 委托 FunctionRegistry（只读咨询函数注册表，与 ActionRegistry 对称）：audienceStats / frequencyCheck / channelPreference / churnRiskScore（流失预测）/ bestSendTime（最优发送时段优化） |
 | applyAction | action / args | 委托 ActionRegistry（权限下放 + 审批门控，见 4.4） |
 
-**职责边界（H）**：Function（audienceStats / frequencyCheck 等）仅供决策咨询，返回只读数据，不做任何强制；强制约束（频控 / 退订 / 时段 / 模板审核）一律在 Action 管线 Validator 链执行（3.4），绝不依赖 LLM 自觉调用。
+**职责边界（H）**：Function（audienceStats / frequencyCheck / churnRiskScore / bestSendTime 等）仅供决策咨询，返回只读数据，不做任何强制；强制约束（频控 / 退订 / 时段 / 模板审核）一律在 Action 管线 Validator 链执行（3.4），绝不依赖 LLM 自觉调用。
 
 **MCP 接入**：本系统内置工具经 agentscope 工具注册表直连；外部数据源/通道工具按 MCP 协议（`mcp://` endpoint 扫描 + 工具描述拉取）接入，统一走 `ToolRegistry`，LLM 侧无感知差异。
 
@@ -1135,6 +1132,7 @@ ea:
 | 15003 | 待审批 | 同 `runId` 已有未决审批时再次提交审批请求（幂等重提拒绝） |
 | 16001 | LLM 调用失败 | 模型不可用/超时 |
 | 16002 | 输出校验失败 | 参数 Schema 不符 |
+| 17001 | Function 未注册 | 未知函数名 |
 
 ## 附录 C：映射表（对象 ↔ 表 ↔ DTO ↔ API）
 

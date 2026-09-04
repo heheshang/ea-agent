@@ -4,7 +4,7 @@ import lombok.Getter;
 
 /**
  * 业务错误码（规范源：详细设计 v1.6 附录 B 错误码表）。
- * 段位：10xxx 通用 / 11xxx 租户 / 12xxx 对象 / 13xxx Action / 14xxx 通道 / 15xxx Agent / 16xxx AI。
+ * 段位：10xxx 通用 / 11xxx 租户 / 12xxx 对象 / 13xxx Action / 14xxx 通道 / 15xxx Agent / 16xxx AI / 17xxx Function。
  */
 @Getter
 public enum ErrorCode {
@@ -50,7 +50,10 @@ public enum ErrorCode {
 
     // ---- 16xxx AI ----
     LLM_CALL_FAILED(16001, "LLM 调用失败"),
-    OUTPUT_VALIDATION_FAILED(16002, "输出校验失败");
+    OUTPUT_VALIDATION_FAILED(16002, "输出校验失败"),
+
+    // ---- 17xxx Function ----
+    FUNCTION_NOT_REGISTERED(17001, "Function 未注册");
 
     private final int code;
     private final String message;

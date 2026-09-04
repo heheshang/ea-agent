@@ -100,7 +100,7 @@ ea-web/src
 **4.5 agentscope-java-2.0**
 
 - 初始化：`AgentScope.init`（模型配置：OpenAI 兼容网关，环境变量 `MODEL_API_KEY / MODEL_BASE_URL / MODEL_NAME`，默认 DashScope 兼容端点；模型接入点抽象在 `ea-agent`，可切 Ollama 本地验证）。
-- 工具注册：`@Tool` 注册到 AgentRunner——**真实执行工具仅 `applyAction`**（ActionRegistry 委托，3.3/ADR-3），决策咨询工具 `Function`（audienceStats / frequencyCheck）只做只读咨询。
+- 工具注册：`@Tool` 注册到 AgentRunner——**真实执行工具仅 `applyAction`**（ActionRegistry 委托，3.3/ADR-3）；决策咨询函数经 `FunctionRegistry` 注册、`callFunction` 单工具路由（audienceStats / frequencyCheck / channelPreference / churnRiskScore / bestSendTime，只读咨询，与 ActionRegistry 对称）。
 - 权限模式：建议模式 = require approval（高危动作转人工，4.4）；自动模式 = allow（限定工具 + 灰度范围）。
 - 会话事件：31 类 Agent 会话事件（thinking/tool_call/approval_required/text_delta/done…）经 `SseEmitter` 流式回传（3.5/7.4）。
 - 会话与记忆：`AgentSession` 存 Redis（7.2）；`agent_run` 落库（plan/decisions/tokens_used，10.2）。

@@ -175,9 +175,9 @@
 | | queryDelivery | 查触达记录与回执 |
 | | queryEvents | 查业务事件 |
 | Apply Action | sendTouch / createCampaign / pauseCampaign / updateCustomerState / importEvents | 与 3.4 注册表一致 |
-| Call Function | audienceStats / frequencyCheck / channelPreference / churnRiskScore | 人群统计、频控判断、渠道偏好、流失预测 |
+| Call Function | callFunction（name / args，委托 FunctionRegistry：audienceStats / frequencyCheck / channelPreference / churnRiskScore / bestSendTime） | 人群统计、频控判断、渠道偏好、流失预测、最优发送时段 |
 
-**工具契约**：每个工具固定提供 —— 名称 / 自然语言描述（供 LLM 选择）/ 参数 JSON Schema / 返回结构。Function（audienceStats / frequencyCheck 等）仅供决策咨询，不做强制；强制约束（频控 / 退订 / 时段）一律在 Action 执行（3.4），不依赖 LLM 自觉调用（H）。
+**工具契约**：每个工具固定提供 —— 名称 / 自然语言描述（供 LLM 选择）/ 参数 JSON Schema / 返回结构。Function 经 FunctionRegistry 注册、callFunction 单工具路由（与 ActionRegistry 对称），仅供决策咨询，不做任何强制；强制约束（频控 / 退订 / 时段）一律在 Action 执行（3.4），不依赖 LLM 自觉调用（H）。
 
 ### 4.3 运行链路（场景：高价值客户流失召回）
 

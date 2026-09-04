@@ -3,14 +3,14 @@ import { onMounted, ref } from 'vue'
 import { get } from '../api/http'
 
 /**
- * Ontology 调用链路页：分层拓扑（引擎 → 工具 → Action → 对象）+ 运行时调用热点。
- * 节点/边为代码事实（TypeRegistry 7 对象 / ActionRegistry 5 Action / AgentToolRegistry 10 工具），
+ * Ontology 调用链路页：分层拓扑（引擎 → 工具 → Action/Function → 对象）+ 运行时调用热点。
+ * 节点/边为代码事实（TypeRegistry 7 对象 / ActionRegistry 6 Action / FunctionRegistry 5 Function / AgentToolRegistry 7 工具），
  * 运行时统计来自 agent_run.tool_calls（calls / avg_ms / fails 徽章）。
  * 未调用过的节点与静态边置灰虚线展示——图同时是「Ontology 架构图」与「调用热点图」。
  */
 interface OntologyNode {
   id: string
-  type: 'engine' | 'tool' | 'action' | 'object'
+  type: 'engine' | 'tool' | 'action' | 'function' | 'object'
   label: string
   calls?: number
   avg_ms?: number
@@ -71,7 +71,7 @@ onMounted(load)
     <div class="page-head">
       <div>
         <div class="page-title">🧭 Ontology 调用链路</div>
-        <div class="page-sub">引擎 → 工具（10）→ Action（5）→ 对象（7）｜调用热点实时标注，未调用节点置灰 = 拓扑静态展示</div>
+        <div class="page-sub">引擎 → 工具（7）→ Action（6）→ Function（5）→ 对象（7）｜调用热点实时标注，未调用节点置灰 = 拓扑静态展示</div>
       </div>
       <div class="head-right">
         <el-radio-group v-model="days" @change="load">
@@ -81,7 +81,7 @@ onMounted(load)
         </el-radio-group>
         <span class="legend">
           <span class="lg lg-blue">引擎</span><span class="lg lg-green">工具</span
-          ><span class="lg lg-orange">Action</span><span class="lg lg-purple">对象</span>
+          ><span class="lg lg-orange">Action</span><span class="lg lg-cyan">Function</span><span class="lg lg-purple">对象</span>
           <span class="lg-tip">— 实线 = 有调用；虚线 = 未激活（静态拓扑）</span>
         </span>
       </div>
@@ -165,6 +165,47 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- 工具 → Function -->
+      <div class="edge-col">
+        <div
+          v-for="e in layerEdges('tool', 'function')"
+          :key="e.from + e.to"
+          class="edge"
+          :class="{ dead: !e.calls }"
+        >
+          <span class="e-to">{{ shortId(e.to) }}</span>
+          <span class="arrow">→</span>
+        </div>
+      </div>
+
+      <!-- Function -->
+      <div class="layer">
+        <div class="layer-title">Function</div>
+        <div
+          v-for="n in layerNodes('function')"
+          :key="n.id"
+          class="node function"
+          :class="{ dead: !n.calls }"
+        >
+          <span class="n-label">{{ n.label }}</span>
+          <span class="badge" v-if="n.calls">×{{ fmtInt(n.calls) }}<i v-if="n.avg_ms">{{ fmtInt(n.avg_ms) }}ms</i></span>
+          <span class="badge fail" v-if="n.fails">✗{{ n.fails }}</span>
+        </div>
+      </div>
+
+      <!-- Function → 对象 -->
+      <div class="edge-col">
+        <div
+          v-for="e in layerEdges('function', 'obj')"
+          :key="e.from + e.to"
+          class="edge"
+          :class="{ dead: !e.calls }"
+        >
+          <span class="e-to">{{ shortId(e.to) }}</span>
+          <span class="arrow">→</span>
+        </div>
+      </div>
+
       <!-- 对象 -->
       <div class="layer">
         <div class="layer-title">对象</div>
@@ -234,6 +275,7 @@ onMounted(load)
 .lg-blue { background: #3370ff; }
 .lg-green { background: #00b42a; }
 .lg-orange { background: #ff7d00; }
+.lg-cyan { background: #13c2c2; }
 .lg-purple { background: #722ed1; }
 .lg-tip { color: #c9cdd4; }
 
@@ -283,6 +325,7 @@ onMounted(load)
 }
 .node.tool { background: #e8ffea; border-color: #00b42a; }
 .node.action { background: #fff3e8; border-color: #ff7d00; }
+.node.function { background: #e6fffb; border-color: #13c2c2; }
 .node.object { background: #f9f0ff; border-color: #722ed1; }
 .node.dead {
   background: #f7f8fa;

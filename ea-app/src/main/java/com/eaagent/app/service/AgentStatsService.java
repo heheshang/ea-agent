@@ -213,25 +213,24 @@ public class AgentStatsService {
 
     /**
      * Ontology 调用链路图（/api/agent/stats/ontology-graph）：
-     * 分层拓扑（引擎 → 工具 → Action → 对象）+ 运行时调用热点。
-     * 节点/边 = 代码事实（TypeRegistry 7 对象、ActionRegistry 5 Action、AgentToolRegistry 10 工具），
-     * 运行时统计从 agent_run.tool_calls 聚合：引擎→工具边按工具调用，applyAction→Action 边按入参 action 拆分。
+     * 分层拓扑（引擎 → 工具 → Action/Function → 对象）+ 运行时调用热点。
+     * 节点/边 = 代码事实（TypeRegistry 7 对象、ActionRegistry 6 Action、FunctionRegistry 5 Function、
+     * AgentToolRegistry 7 工具），运行时统计从 agent_run.tool_calls 聚合：引擎→工具边按工具调用，
+     * tool:applyAction→Action 边按入参 action 拆分，tool:callFunction→Function 边按入参 name 拆分。
      */
     public Map<String, Object> ontologyGraph(long tenantId, int days, String sessionId) {
         List<AgentRunEntity> runs = loadRuns(tenantId, days, sessionId);
 
-        // 静态拓扑映射（代码事实：工具→对象、Action→主写对象）
+        // 静态拓扑映射（代码事实：查询工具→对象、Action→主写对象、Function→主读对象）
         Map<String, String> toolToObject = new LinkedHashMap<>();
         toolToObject.put("queryCustomers", "customer");
         toolToObject.put("queryAudience", "audience");
         toolToObject.put("getCampaign", "campaign");
         toolToObject.put("queryDelivery", "delivery");
         toolToObject.put("queryEvents", "event");
-        toolToObject.put("audienceStats", "audience");
-        toolToObject.put("frequencyCheck", "delivery");
-        toolToObject.put("channelPreference", "customer");
-        toolToObject.put("churnRiskScore", "event");
-        toolToObject.put("applyAction", "action");
+        List<String> tools = new ArrayList<>(toolToObject.keySet());
+        tools.add("applyAction");
+        tools.add("callFunction");
 
         Map<String, String> actionToObject = new LinkedHashMap<>();
         actionToObject.put("sendTouch", "delivery");
@@ -240,6 +239,13 @@ public class AgentStatsService {
         actionToObject.put("updateCampaign", "campaign");
         actionToObject.put("updateCustomerState", "customer");
         actionToObject.put("importEvents", "event");
+
+        Map<String, String> functionToObject = new LinkedHashMap<>();
+        functionToObject.put("audienceStats", "audience");
+        functionToObject.put("frequencyCheck", "delivery");
+        functionToObject.put("channelPreference", "customer");
+        functionToObject.put("churnRiskScore", "event");
+        functionToObject.put("bestSendTime", "delivery");
 
         Map<String, String> objectLabels = new LinkedHashMap<>();
         objectLabels.put("customer", "Customer 客户");
@@ -251,8 +257,9 @@ public class AgentStatsService {
         objectLabels.put("event", "Event 事件");
 
         // 运行时聚合
-        Map<String, ToolAgg> tools = new LinkedHashMap<>();
-        Map<String, ToolAgg> actions = new LinkedHashMap<>();
+        Map<String, ToolAgg> toolAggs = new LinkedHashMap<>();
+        Map<String, ToolAgg> actionAggs = new LinkedHashMap<>();
+        Map<String, ToolAgg> functionAggs = new LinkedHashMap<>();
         for (AgentRunEntity r : runs) {
             List<Map<String, Object>> tcs = r.getToolCalls();
             if (tcs == null) {
@@ -266,9 +273,15 @@ public class AgentStatsService {
                     if (actName == null) {
                         continue;
                     }
-                    agg = actions.computeIfAbsent(actName, ToolAgg::new);
+                    agg = actionAggs.computeIfAbsent(actName, ToolAgg::new);
+                } else if ("callFunction".equals(name)) {
+                    String fnName = parseFunction(tc.get("params"));
+                    if (fnName == null) {
+                        continue;
+                    }
+                    agg = functionAggs.computeIfAbsent(fnName, ToolAgg::new);
                 } else {
-                    agg = tools.computeIfAbsent(name, ToolAgg::new);
+                    agg = toolAggs.computeIfAbsent(name, ToolAgg::new);
                 }
                 agg.calls++;
                 Number ms = num(tc.get("duration_ms"));
@@ -284,16 +297,22 @@ public class AgentStatsService {
         List<Map<String, Object>> nodes = new ArrayList<>();
         nodes.add(Map.of("id", "engine", "type", "engine", "label", "Agent 引擎",
                 "calls", runs.size(), "avg_ms", 0, "fails", 0));
-        for (String t : toolToObject.keySet()) {
-            ToolAgg a = tools.get(t);
+        for (String t : tools) {
+            ToolAgg a = toolAggs.get(t);
             nodes.add(a == null ? Map.of("id", "tool:" + t, "type", "tool", "label", t)
                     : Map.of("id", "tool:" + t, "type", "tool", "label", t,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
         for (String act : actionToObject.keySet()) {
-            ToolAgg a = actions.get(act);
+            ToolAgg a = actionAggs.get(act);
             nodes.add(a == null ? Map.of("id", "action:" + act, "type", "action", "label", act)
                     : Map.of("id", "action:" + act, "type", "action", "label", act,
+                    "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
+        }
+        for (String fn : functionToObject.keySet()) {
+            ToolAgg a = functionAggs.get(fn);
+            nodes.add(a == null ? Map.of("id", "function:" + fn, "type", "function", "label", fn)
+                    : Map.of("id", "function:" + fn, "type", "function", "label", fn,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
         for (String obj : objectLabels.keySet()) {
@@ -302,18 +321,25 @@ public class AgentStatsService {
 
         // 边
         List<Map<String, Object>> edges = new ArrayList<>();
-        for (String t : toolToObject.keySet()) {
-            ToolAgg a = tools.get(t);
+        for (String t : tools) {
+            ToolAgg a = toolAggs.get(t);
             edges.add(a == null
                     ? Map.of("from", "engine", "to", "tool:" + t)
                     : Map.of("from", "engine", "to", "tool:" + t,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
         for (String act : actionToObject.keySet()) {
-            ToolAgg a = actions.get(act);
+            ToolAgg a = actionAggs.get(act);
             edges.add(a == null
                     ? Map.of("from", "tool:applyAction", "to", "action:" + act)
                     : Map.of("from", "tool:applyAction", "to", "action:" + act,
+                    "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
+        }
+        for (String fn : functionToObject.keySet()) {
+            ToolAgg a = functionAggs.get(fn);
+            edges.add(a == null
+                    ? Map.of("from", "tool:callFunction", "to", "function:" + fn)
+                    : Map.of("from", "tool:callFunction", "to", "function:" + fn,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
         for (String t : toolToObject.keySet()) {
@@ -322,6 +348,9 @@ public class AgentStatsService {
         }
         for (String act : actionToObject.keySet()) {
             edges.add(Map.of("from", "action:" + act, "to", "obj:" + actionToObject.get(act)));
+        }
+        for (String fn : functionToObject.keySet()) {
+            edges.add(Map.of("from", "function:" + fn, "to", "obj:" + functionToObject.get(fn)));
         }
 
         Map<String, Object> out = new LinkedHashMap<>();
@@ -363,6 +392,39 @@ public class AgentStatsService {
         int i = s.indexOf("action=");
         if (i >= 0) {
             String rest = s.substring(i + "action=".length()).trim();
+            int j = rest.indexOf(',');
+            if (j > 0) {
+                return rest.substring(0, j).trim();
+            }
+            j = rest.indexOf('}');
+            if (j > 0) {
+                return rest.substring(0, j).trim();
+            }
+        }
+        return null;
+    }
+
+    /** 从 callFunction 调用参数中解析函数名（兼容 JSON 与 Java map toString 两种形态）。 */
+    private static String parseFunction(Object params) {
+        if (params == null) {
+            return null;
+        }
+        String s = String.valueOf(params).trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        try {
+            Map<String, Object> m = JsonUtils.readMap(s);
+            Object n = m.get("name");
+            if (n != null) {
+                return String.valueOf(n);
+            }
+        } catch (Exception ignored) {
+            // 非 JSON（Java map toString），走下方正则
+        }
+        int i = s.indexOf("name=");
+        if (i >= 0) {
+            String rest = s.substring(i + "name=".length()).trim();
             int j = rest.indexOf(',');
             if (j > 0) {
                 return rest.substring(0, j).trim();

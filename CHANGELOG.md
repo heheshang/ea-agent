@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Call Function 三件套补齐**：`FunctionRegistry`（与 `ActionRegistry` 对称的只读咨询函数注册表）+ 单一 `callFunction` 工具路由——audienceStats / frequencyCheck / channelPreference 收编为注册函数；churnRiskScore 升级为流失预测模型 v1（近 30 天事件衰减 + 非 ACTIVE 状态加成，`model` 版本字段预留 ML 替换）；新增 bestSendTime 最优发送时段优化算法 v1（近 30 天事件 / 成功触达时段分布加权 + 23-06 安静窗口回避 + 无信号回退 10-11 时）
+- **Agent 工具收敛**：10 工具 → 7 工具（5 查询 + applyAction + callFunction），引擎系统提示词 v4 同步约束
+- **Ontology 链路图**：新增 Function 层（引擎 → 工具 → Action/Function → 对象），运行时统计按 callFunction 入参 name 拆分聚合
+- **错误码**：新增 17xxx Function 段（E-17001 Function 未注册），详细设计附录 B 同步
+
 ## [0.1.0] - 2026-09-05
 
 首个可运行基线：后端全模块 + 前端控制台 + 本地容器化联调栈。

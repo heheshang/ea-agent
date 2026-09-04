@@ -209,9 +209,9 @@
 |---|---|---|
 | Query Objects | queryCustomers / queryAudience / getCampaign / queryDelivery / queryEvents | 按条件查询对象与状态 |
 | Apply Action | `applyAction`（action / args，委托 ActionRegistry：sendTouch / createCampaign / pauseCampaign / updateCustomerState / importEvents，与 4.3 注册表一致） | 写操作收敛为单一工具，Action 由参数选择（详细设计 4.2 定案） |
-| Call Function | audienceStats / frequencyCheck / channelPreference / churnRiskScore | 人群统计、频控判断、渠道偏好、流失预测 |
+| Call Function | callFunction（name / args，委托 FunctionRegistry：audienceStats / frequencyCheck / channelPreference / churnRiskScore / bestSendTime） | 人群统计、频控判断、渠道偏好、流失预测、最优发送时段 |
 
-**工具契约**：名称 / 自然语言描述（供 LLM 选择）/ 参数 JSON Schema / 返回结构；租户参数由服务端注入（ADR-6）。Function（audienceStats / frequencyCheck 等）仅作决策咨询；强制约束（频控 / 退订 / 时段）一律在 Action 管线执行，不依赖 LLM 自觉调用。
+**工具契约**：名称 / 自然语言描述（供 LLM 选择）/ 参数 JSON Schema / 返回结构；租户参数由服务端注入（ADR-6）。Function 经 FunctionRegistry 注册、callFunction 单工具路由（与 ActionRegistry 对称），仅作决策咨询；强制约束（频控 / 退订 / 时段）一律在 Action 管线执行，不依赖 LLM 自觉调用。
 
 ### 5.3 运行链路与会话状态机
 

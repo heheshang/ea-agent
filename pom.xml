@@ -30,6 +30,8 @@
   <properties>
     <java.version>17</java.version>
     <maven.compiler.release>17</maven.compiler.release>
+    <!-- JDK 24+ 默认关闭隐式注解处理（JDK-8335876）：显式开启，保证 Lombok 在任意 JDK 下运行（JDK 17 下与默认一致） -->
+    <maven.compiler.proc>full</maven.compiler.proc>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <mybatis-plus.version>3.5.17</mybatis-plus.version>
     <agentscope.version>2.0.1</agentscope.version>
