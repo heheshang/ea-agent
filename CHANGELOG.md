@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- **Agent 回答语言**：系统提示词明确所有面向用户的回复一律使用中文（原仅限定"建议"为中文，总结/澄清/拒绝可能输出非中文）；`sys_prompt_version` v4 → v5。
+
 - **Agent 权限下放修复（9.2）**：applyAction 此前以硬编码角色 `AGENT` 构造 ActionContext（ROLE_LEVEL 无此角色 → 0 级），`createCampaign`/`updateCustomerState`/`pauseCampaign` 在 Agent 对话中一律 E-10003 无权限；现透传发起用户 `userId/role`（`role(agent) = role(发起用户)`），权限校验回归 RBAC 矩阵。
 
 ## [0.1.0] - 2026-09-05
