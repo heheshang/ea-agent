@@ -67,7 +67,7 @@ public class AgentChatController {
         // 响应永不开始（前端 EventSource 永远 CONNECTING）。
         sseExecutor.execute(() -> {
             try {
-                TenantContext.setIdentity(run.getTenantId(), run.getUserId(), "USER");
+                TenantContext.setIdentity(run.getTenantId(), run.getUserId(), run.getRole());
                 agentService.resume(run, emitter);
             } catch (BizException be) {
                 // 状态不允许等：错误以 SSE error 事件收尾，避免二次包装
