@@ -338,9 +338,10 @@ public class AgentToolRegistry {
     /** applyAction：动作执行（设计 3.4）。 */
     class ApplyAction extends BaseTool {
         ApplyAction(Long tenantId, Long userId, String role) {
-            super(tenantId, userId, role, "applyAction",
-                    "执行运营动作。registered 动作：sendTouch（触达发送）、createCampaign（创建任务）、pauseCampaign（暂停任务）、updateCampaign（更新任务触发规则 event_type/window/cooldown）、updateCustomerState（更新客户状态）、importEvents（导入事件）",
-                    schema(Map.of("action", pStr("动作名（registered 六选一）"), "args", pObj("动作参数对象（按动作名传字段；updateCampaign 传 campaign_id，可选 trigger_rule 对象或顶层 cooldown/window/event_type）")), List.of("action", "args")));
+            super(tenantId, userId, role, "applyAction", describeActions(),
+                    schema(Map.of("action", pStr("动作名（registered " + actionRegistry.all().size() + " 选一）"),
+                                    "args", pObj("动作参数对象（键用下划线形式，如 campaign_id；各动作必需字段见 applyAction 描述，多余字段忽略）")),
+                            List.of("action", "args")));
         }
 
         @Override
@@ -351,10 +352,50 @@ public class AgentToolRegistry {
                     ? (Map<String, Object>) input.get("args")
                     : JsonUtils.readMapLenient(String.valueOf(input.get("args")));
             ActionContext ctx = ActionContext.of(tenantId, userId, role, "tool:" + UUID.randomUUID());
-            ActionResult r = actionRegistry.get(action).execute(ctx, com.eaagent.ontology.action.ActionRequest.of(args));
+            ActionResult r = actionRegistry.get(action)
+                    .execute(ctx, com.eaagent.ontology.action.ActionRequest.of(normalizeKeys(args)));
             Map<String, Object> out = r.data() == null ? new HashMap<>() : new HashMap<>(r.data());
             out.put("ok", r.success());
             return out;
         }
+    }
+
+    /** applyAction 工具描述：动态枚举动作与必需字段（LLM 无需猜参数名）。 */
+    private String describeActions() {
+        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略）。registered："
+                + actionRegistry.all().values().stream()
+                        .sorted(java.util.Comparator.comparing(a -> a.meta().name()))
+                        .map(a -> a.meta().name() + "（" + a.meta().description()
+                                + (a.meta().requiredArgs().isEmpty() ? ""
+                                        : "；必需字段：" + String.join("、", a.meta().requiredArgs())) + "）")
+                        .collect(java.util.stream.Collectors.joining("、"));
+    }
+
+    /** 参数键归一化：驼峰 → 下划线（LLM 常传 campaignId/tenantId，动作按 campaign_id/tenant_id 声明）。 */
+    private static Map<String, Object> normalizeKeys(Map<String, Object> args) {
+        Map<String, Object> out = new HashMap<>(args);
+        for (Map.Entry<String, Object> en : args.entrySet()) {
+            String k = en.getKey();
+            if (k.matches(".*[A-Z].*")) {
+                String snake = toSnake(k);
+                if (!out.containsKey(snake)) {
+                    out.put(snake, en.getValue());
+                }
+            }
+        }
+        return out;
+    }
+
+    private static String toSnake(String k) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < k.length(); i++) {
+            char c = k.charAt(i);
+            if (Character.isUpperCase(c)) {
+                sb.append('_').append(Character.toLowerCase(c));
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 }

@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- **Agent 工具参数契约**：applyAction 描述改为按 ActionRegistry 动态枚举各动作的必需字段（此前仅文案描述，LLM 猜参数名导致反复失败：sendTouch 只缺 `campaign_id` 却传 `tenant_id`/驼峰键）；args 键名驼峰自动归一为下划线（`campaignId` → `campaign_id`）。
+
 - **Agent 工具参数容错**：LLM 以 JSON 字符串形式返回工具 `args` 且采用单引号风格（如 `{'tenant_id': 1, …}`）时，`applyAction`/`callFunction` 的 `JsonUtils.toMap(String)` 抛 `Cannot construct instance of LinkedHashMap`（convertValue 不支持 String→Map）；现改用 `JsonUtils.readMapLenient`——先按标准 JSON 解析，失败后容忍单引号键值/未引号键/尾逗号。
 
 - **Agent 工具结果展示**：真实模型引擎的 `action_result` 事件此前不携带工具名，前端"工具结果"卡片显示字面量 `tool`；现事件携带 `tool` 字段（取自消息内 `ToolResultBlock.getName()`），前端兜底改为 `unknown`。
