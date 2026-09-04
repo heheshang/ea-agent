@@ -1,0 +1,9 @@
+.git
+.idea
+.gitignore
+docs
+**/target
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.agentscope

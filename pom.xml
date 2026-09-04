@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.4.13</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.eaagent</groupId>
+  <artifactId>ea-agent-parent</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>ea-agent-parent</name>
+  <description>智能运营触达系统（EA-Agent）—— Ontology + EA-Bus + AI-Agent 后端工程</description>
+
+  <modules>
+    <module>ea-common</module>
+    <module>ea-api</module>
+    <module>ea-ontology</module>
+    <module>ea-channel</module>
+    <module>ea-agent</module>
+    <module>ea-app</module>
+  </modules>
+
+  <properties>
+    <java.version>17</java.version>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <mybatis-plus.version>3.5.17</mybatis-plus.version>
+    <agentscope.version>2.0.1</agentscope.version>
+    <jjwt.version>0.12.6</jjwt.version>
+    <!-- 依赖方向（详细设计 2.1）：common <- api <- ontology <- agent；channel 依赖 common+ontology；app 依赖全部 -->
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.eaagent</groupId>
+        <artifactId>ea-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.eaagent</groupId>
+        <artifactId>ea-api</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.eaagent</groupId>
+        <artifactId>ea-ontology</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.eaagent</groupId>
+        <artifactId>ea-channel</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.eaagent</groupId>
+        <artifactId>ea-agent</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>com.baomidou</groupId>
+        <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        <version>${mybatis-plus.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.baomidou</groupId>
+        <artifactId>mybatis-plus-jsqlparser</artifactId>
+        <version>${mybatis-plus.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-harness</artifactId>
+        <version>${agentscope.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-extensions-model-dashscope</artifactId>
+        <version>${agentscope.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-extensions-model-openai</artifactId>
+        <version>${agentscope.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-api</artifactId>
+        <version>${jjwt.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-impl</artifactId>
+        <version>${jjwt.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-jackson</artifactId>
+        <version>${jjwt.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
