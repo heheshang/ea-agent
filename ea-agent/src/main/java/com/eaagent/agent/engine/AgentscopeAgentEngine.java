@@ -289,9 +289,21 @@ public class AgentscopeAgentEngine implements AgentEngine {
         String text = renderText(e.getMessage());
         return switch (t) {
             case REASONING -> new EngineEvent("thinking_delta", "{\"text\":" + jsonQuote(text) + "}");
-            case TOOL_RESULT -> new EngineEvent("action_result", "{\"result\":" + jsonQuote(text) + "}");
+            case TOOL_RESULT -> new EngineEvent("action_result",
+                    "{\"tool\":" + (toolNameOf(e.getMessage()) == null ? "null" : jsonQuote(toolNameOf(e.getMessage())))
+                            + ",\"result\":" + jsonQuote(text) + "}");
             default -> new EngineEvent("text_delta", "{\"text\":" + jsonQuote(text) + "}");
         };
+    }
+
+    /** 提取消息中首个非空工具名（action_result 事件携带，前端展示"工具结果 · 工具名"）。 */
+    private static String toolNameOf(Msg msg) {
+        for (ContentBlock b : msg.getContent()) {
+            if (b instanceof ToolResultBlock tr && tr.getName() != null && !tr.getName().isBlank()) {
+                return tr.getName();
+            }
+        }
+        return null;
     }
 
     private static String renderText(Msg msg) {

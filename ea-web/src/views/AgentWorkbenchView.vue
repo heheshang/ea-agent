@@ -75,7 +75,7 @@ function pushEvent(name: SseEventName, data: unknown) {
       asst.blocks.push({ kind: 'step', title: `工具调用 · ${str(d.tool ?? 'unknown')}`, detail: d.args })
       break
     case 'action_result':
-      asst.blocks.push({ kind: 'step', title: `工具结果 · ${str(d.tool ?? 'tool')}`, detail: d.result ?? d })
+      asst.blocks.push({ kind: 'step', title: `工具结果 · ${str(d.tool ?? 'unknown')}`, detail: d.result ?? d })
       break
     case 'plan':
       if (Array.isArray(d.steps)) asst.blocks.unshift({ kind: 'step', title: '计划', detail: d.steps })
