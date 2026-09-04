@@ -321,7 +321,7 @@ public class AgentToolRegistry {
             } else if (rawArgs == null) {
                 args = Map.of();
             } else {
-                args = JsonUtils.toMap(String.valueOf(rawArgs));
+                args = JsonUtils.readMapLenient(String.valueOf(rawArgs));
             }
             return functionRegistry.get(name).execute(tenantId, args);
         }
@@ -349,7 +349,7 @@ public class AgentToolRegistry {
             @SuppressWarnings("unchecked")
             Map<String, Object> args = input.get("args") instanceof Map
                     ? (Map<String, Object>) input.get("args")
-                    : JsonUtils.toMap(String.valueOf(input.get("args")));
+                    : JsonUtils.readMapLenient(String.valueOf(input.get("args")));
             ActionContext ctx = ActionContext.of(tenantId, userId, role, "tool:" + UUID.randomUUID());
             ActionResult r = actionRegistry.get(action).execute(ctx, com.eaagent.ontology.action.ActionRequest.of(args));
             Map<String, Object> out = r.data() == null ? new HashMap<>() : new HashMap<>(r.data());
