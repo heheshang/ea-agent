@@ -39,7 +39,7 @@ import java.util.UUID;
 /**
  * Agent 工具注册表（详细设计 4.2 三件套）：5 个查询工具（Query Objects）+ applyAction
  * （Apply Action，ActionRegistry 路由）+ callFunction（Call Function，FunctionRegistry 路由）。
- * 工具按租户实例化（forTenant），执行不依赖 ThreadLocal TenantContext（agentscope 线程无上下文）。
+ * 工具按租户 + 会话身份实例化（forTenant），执行不依赖 ThreadLocal TenantContext（agentscope 线程无上下文）。
  */
 @Component
 public class AgentToolRegistry {
@@ -78,24 +78,29 @@ public class AgentToolRegistry {
         return new Toolkit();
     }
 
-    /** 指定租户的工具集（供 agentscope 引擎注册）。 */
-    public List<AgentTool> forTenant(Long tenantId) {
+    /** 指定租户 + 会话身份（发起用户）的工具集（供 agentscope 引擎注册）：applyAction 以用户身份做权限校验（9.2 权限下放）。 */
+    public List<AgentTool> forTenant(Long tenantId, Long userId, String role) {
         return List.of(
-                new QueryCustomers(tenantId), new QueryAudience(tenantId), new GetCampaign(tenantId),
-                new QueryDelivery(tenantId), new QueryEvents(tenantId),
-                new ApplyAction(tenantId), new CallFunction(tenantId));
+                new QueryCustomers(tenantId, userId, role), new QueryAudience(tenantId, userId, role),
+                new GetCampaign(tenantId, userId, role), new QueryDelivery(tenantId, userId, role),
+                new QueryEvents(tenantId, userId, role), new ApplyAction(tenantId, userId, role),
+                new CallFunction(tenantId, userId, role));
     }
 
     // ---------- 基础工具骨架 ----------
 
     abstract static class BaseTool implements AgentTool {
         protected final Long tenantId;
+        protected final Long userId;
+        protected final String role;
         private final String name;
         private final String description;
         private final Map<String, Object> params;
 
-        BaseTool(Long tenantId, String name, String description, Map<String, Object> params) {
+        BaseTool(Long tenantId, Long userId, String role, String name, String description, Map<String, Object> params) {
             this.tenantId = tenantId;
+            this.userId = userId;
+            this.role = role;
             this.name = name;
             this.description = description;
             this.params = params;
@@ -181,8 +186,8 @@ public class AgentToolRegistry {
 
     /** queryCustomers：DSL 过滤客户。 */
     class QueryCustomers extends BaseTool {
-        QueryCustomers(Long tenantId) {
-            super(tenantId, "queryCustomers", "按 DSL 过滤表达式查询客户画像",
+        QueryCustomers(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "queryCustomers", "按 DSL 过滤表达式查询客户画像",
                     schema(Map.of("filter", pStr("DSL 过滤，如 status == 'ACTIVE'"), "limit", pInt("返回条数上限，默认 20")), List.of("filter")));
         }
 
@@ -216,8 +221,8 @@ public class AgentToolRegistry {
 
     /** queryAudience：audience 详情 + 成员数。 */
     class QueryAudience extends BaseTool {
-        QueryAudience(Long tenantId) {
-            super(tenantId, "queryAudience", "查询人群包详情与成员规模",
+        QueryAudience(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "queryAudience", "查询人群包详情与成员规模",
                     schema(Map.of("audience_id", pInt("人群包 ID")), List.of("audience_id")));
         }
 
@@ -237,8 +242,8 @@ public class AgentToolRegistry {
 
     /** getCampaign：campaign 配置（含灰度/AB/触发规则）。 */
     class GetCampaign extends BaseTool {
-        GetCampaign(Long tenantId) {
-            super(tenantId, "getCampaign", "查询活动配置（灰度、AB、触发规则）",
+        GetCampaign(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "getCampaign", "查询活动配置（灰度、AB、触发规则）",
                     schema(Map.of("campaign_id", pInt("活动 ID")), List.of("campaign_id")));
         }
 
@@ -254,8 +259,8 @@ public class AgentToolRegistry {
 
     /** queryDelivery：触达流水。 */
     class QueryDelivery extends BaseTool {
-        QueryDelivery(Long tenantId) {
-            super(tenantId, "queryDelivery", "查询触达流水",
+        QueryDelivery(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "queryDelivery", "查询触达流水",
                     schema(Map.of("campaign_id", pInt("按活动过滤，可选"), "customer_id", pInt("按客户过滤，可选"), "limit", pInt("条数上限，默认 20")), List.of()));
         }
 
@@ -279,8 +284,8 @@ public class AgentToolRegistry {
 
     /** queryEvents：客户事件流。 */
     class QueryEvents extends BaseTool {
-        QueryEvents(Long tenantId) {
-            super(tenantId, "queryEvents", "查询客户事件流",
+        QueryEvents(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "queryEvents", "查询客户事件流",
                     schema(Map.of("customer_id", pInt("客户 ID"), "limit", pInt("条数上限，默认 10")), List.of("customer_id")));
         }
 
@@ -299,8 +304,8 @@ public class AgentToolRegistry {
 
     /** callFunction：咨询函数路由（4.2 Call Function，FunctionRegistry 注册表）。 */
     class CallFunction extends BaseTool {
-        CallFunction(Long tenantId) {
-            super(tenantId, "callFunction", describeFunctions(),
+        CallFunction(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "callFunction", describeFunctions(),
                     schema(Map.of("name", pStr("函数名（registered " + functionRegistry.all().size() + " 选一）"),
                                     "args", pObj("函数参数对象（按函数要求传字段）")),
                             List.of("name", "args")));
@@ -332,8 +337,8 @@ public class AgentToolRegistry {
 
     /** applyAction：动作执行（设计 3.4）。 */
     class ApplyAction extends BaseTool {
-        ApplyAction(Long tenantId) {
-            super(tenantId, "applyAction",
+        ApplyAction(Long tenantId, Long userId, String role) {
+            super(tenantId, userId, role, "applyAction",
                     "执行运营动作。registered 动作：sendTouch（触达发送）、createCampaign（创建任务）、pauseCampaign（暂停任务）、updateCampaign（更新任务触发规则 event_type/window/cooldown）、updateCustomerState（更新客户状态）、importEvents（导入事件）",
                     schema(Map.of("action", pStr("动作名（registered 六选一）"), "args", pObj("动作参数对象（按动作名传字段；updateCampaign 传 campaign_id，可选 trigger_rule 对象或顶层 cooldown/window/event_type）")), List.of("action", "args")));
         }
@@ -345,7 +350,7 @@ public class AgentToolRegistry {
             Map<String, Object> args = input.get("args") instanceof Map
                     ? (Map<String, Object>) input.get("args")
                     : JsonUtils.toMap(String.valueOf(input.get("args")));
-            ActionContext ctx = ActionContext.of(tenantId, null, "AGENT", "tool:" + UUID.randomUUID());
+            ActionContext ctx = ActionContext.of(tenantId, userId, role, "tool:" + UUID.randomUUID());
             ActionResult r = actionRegistry.get(action).execute(ctx, com.eaagent.ontology.action.ActionRequest.of(args));
             Map<String, Object> out = r.data() == null ? new HashMap<>() : new HashMap<>(r.data());
             out.put("ok", r.success());

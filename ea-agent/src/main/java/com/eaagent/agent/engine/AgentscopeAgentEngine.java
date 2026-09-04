@@ -168,7 +168,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     public Flux<EngineEvent> stream(RunContext rc, String userInput) {
         HarnessAgent a = sessions.computeIfAbsent(rc.sessionId(), sid -> {
             Toolkit tk = new Toolkit();
-            for (AgentTool t : toolRegistry.forTenant(rc.tenantId())) {
+            for (AgentTool t : toolRegistry.forTenant(rc.tenantId(), rc.userId(), rc.role())) {
                 tk.registerAgentTool(t);
             }
             RunStatsMiddleware statsMw = new RunStatsMiddleware(model, sid);

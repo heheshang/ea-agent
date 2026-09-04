@@ -11,6 +11,10 @@
 - **Ontology 链路图**：新增 Function 层（引擎 → 工具 → Action/Function → 对象），运行时统计按 callFunction 入参 name 拆分聚合
 - **错误码**：新增 17xxx Function 段（E-17001 Function 未注册），详细设计附录 B 同步
 
+### Fixed
+
+- **Agent 权限下放修复（9.2）**：applyAction 此前以硬编码角色 `AGENT` 构造 ActionContext（ROLE_LEVEL 无此角色 → 0 级），`createCampaign`/`updateCustomerState`/`pauseCampaign` 在 Agent 对话中一律 E-10003 无权限；现透传发起用户 `userId/role`（`role(agent) = role(发起用户)`），权限校验回归 RBAC 矩阵。
+
 ## [0.1.0] - 2026-09-05
 
 首个可运行基线：后端全模块 + 前端控制台 + 本地容器化联调栈。

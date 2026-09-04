@@ -18,6 +18,7 @@ public class AgentRunEntity {
     public static final String COL_TENANT_ID = "tenant_id";
     public static final String COL_SESSION_ID = "session_id";
     public static final String COL_USER_ID = "user_id";
+    public static final String COL_ROLE = "role";
     public static final String COL_GOAL = "goal";
     public static final String COL_PLAN = "plan";
     public static final String COL_DECISIONS = "decisions";
@@ -36,6 +37,8 @@ public class AgentRunEntity {
     private Long tenantId;
     private String sessionId;
     private Long userId;
+    /** 发起用户角色（9.2 权限下放：role(agent)=role(发起用户)，工具身份透传）。 */
+    private String role;
     private String goal;
     @TableField(typeHandler = JacksonTypeHandler.class)
     private java.util.List<java.util.Map<String, Object>> plan;    // jsonb

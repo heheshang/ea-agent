@@ -64,6 +64,7 @@ public class AgentService {
         run.setTenantId(tenantId);
         run.setSessionId(sessionId);
         run.setUserId(userId);
+        run.setRole(role);
         run.setGoal(goal);
         run.setStatus(ST_NEW);
         run.setCreatedAt(Instant.now());
@@ -154,7 +155,7 @@ public class AgentService {
             run.setUpdatedAt(Instant.now());
             runMapper.updateById(run);
 
-            RunContext rc = new RunContext(run.getTenantId(), run.getUserId(), "USER", run.getSessionId(), String.valueOf(runId));
+            RunContext rc = new RunContext(run.getTenantId(), run.getUserId(), run.getRole(), run.getSessionId(), String.valueOf(runId));
             AgentEngine engine = engine();
             List<Map<String, Object>> plan = new ArrayList<>();
             engine.stream(rc, run.getGoal())
