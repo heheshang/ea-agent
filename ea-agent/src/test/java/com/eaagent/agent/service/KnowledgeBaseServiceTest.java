@@ -140,10 +140,30 @@ class KnowledgeBaseServiceTest {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeBaseService s = svc(mapper, 3);
         assertEquals(0, s.searchScored(1L, "   ", 3).size());
-        assertEquals(0, s.searchScored(1L, "退", 3).size()); // 单字切词为空
+        assertEquals(0, s.searchScored(1L, "退", 3).size()); // 单 CJK 字命中面过宽，短路
         assertEquals(0, s.searchScored(null, "退订", 3).size());
         assertEquals(0, s.searchScored(1L, "退订", 0).size());
         verify(mapper, never()).searchSimilar(any(Long.class), anyString(), anyInt());
+    }
+
+    @Test
+    void singleLatinCharQueryMatchesLiteralTerm() {
+        // id5 用户数据形态：content="t"、tags=["test","t"] → q=t 按字面词检索命中
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        when(mapper.searchSimilar(any(Long.class), anyString(), anyInt())).thenReturn(List.of(
+                row(5L, "tuiding", List.of("test", "t"), 0.0)));
+        List<KnowledgeBaseService.KnowledgeHit> hits = svc(mapper, 3).searchScored(1L, "t", 3);
+        assertEquals(List.of(5L), hits.stream().map(h -> h.entry().getId()).toList());
+        assertEquals(1.0, hits.get(0).score());
+        assertEquals(List.of("test", "t"), hits.get(0).entry().getTags());
+        // 单字符进入特征哈希：向量非零、SQL 参数与常规检索一致
+        verify(mapper).searchSimilar(org.mockito.ArgumentMatchers.eq(1L),
+                org.mockito.ArgumentMatchers.argThat(s -> {
+                    String[] vals = s.substring(1, s.length() - 1).split(",");
+                    return vals.length == KnowledgeBaseService.EMBEDDING_DIM
+                            && java.util.Arrays.stream(vals).anyMatch(v -> Math.abs(Double.parseDouble(v)) > 1e-9);
+                }),
+                org.mockito.ArgumentMatchers.eq(15));
     }
 
     // ---------- 向量写入维护 ----------

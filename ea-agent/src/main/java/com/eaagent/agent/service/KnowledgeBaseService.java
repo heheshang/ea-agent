@@ -166,7 +166,7 @@ public class KnowledgeBaseService {
         if (tenantId == null || query == null || query.isBlank() || k == 0) {
             return List.of();
         }
-        List<String> terms = tokenize(query);
+        List<String> terms = queryTerms(query);
         if (terms.isEmpty()) {
             return List.of();
         }
@@ -236,10 +236,26 @@ public class KnowledgeBaseService {
     /** 查询 → 查询向量（每词项权重 1）。 */
     static float[] embedQuery(String query) {
         Map<String, Integer> w = new HashMap<>();
-        for (String t : tokenize(query)) {
+        for (String t : queryTerms(query)) {
             w.put(t, 1);
         }
         return embed(w);
+    }
+
+    /**
+     * 查询词项：常规切词（tokenize）；整体为单 latin 字符时按字面词回退
+     * （如 content="t" 的条目可被 q=t 命中，见 id5 用户数据）；CJK 单字在中文语料命中面过宽，保持短路。
+     */
+    static List<String> queryTerms(String query) {
+        List<String> terms = tokenize(query);
+        if (!terms.isEmpty()) {
+            return terms;
+        }
+        String single = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (single.length() == 1 && !isCjk(single)) {
+            return List.of(single);
+        }
+        return List.of();
     }
 
     /** float[] → pgvector 字面量（[..] 方括号，pgvector 0.7+ 支持）。 */
