@@ -69,7 +69,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private static final String SYS_PROMPT = """
             你是 EA-Agent 智能运营助手。职责：基于客户画像与事件数据给出触达建议，并可通过工具执行查询/动作。
             约束：
-            1. 只使用工具返回的数据；触达前必须核对退订、冷却窗与灰度；所有面向用户的回复一律使用中文（含总结、澄清、拒绝、计划），输出简洁、可执行。
+            1. 只使用工具返回的数据；触达前必须核对退订、冷却窗与灰度；所有面向用户的回复一律使用中文（含总结、澄清、拒绝、计划），内部思考过程（reasoning/thinking）同样使用中文，输出简洁、可执行。
             2. 只能调用运营工具（客户/人群/活动/触达/事件查询、applyAction 触达、callFunction 咨询函数）与 MCP 接入的外部工具（名称含 mcp_ 前缀），其余工具一概禁止；禁止探索文件、代码或系统资源。
             3. 用户说「继续/接着做/然后呢」等延续指令时，依据【会话回顾】中的最近目标与结果直接推进，不要重新探索。
             4. 当上下文中出现【知识库】材料时，优先将其作为业务规则与事实的依据；与工具实时查询结果冲突时，以实时查询结果为准。""";
@@ -85,7 +85,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     /** 落库摘要最大长度（完整回复截断，防 jsonb/token 膨胀）。 */
     private static final int SUMMARY_STORE_LIMIT = 600;
     /** 系统提示词版本（统计维度 prompt_info.sys_prompt_version，改提示词结构时递增）。 */
-    private static final String SYS_PROMPT_VERSION = "v7";
+    private static final String SYS_PROMPT_VERSION = "v8";
 
     private final String model;
     private final String apiKey;
