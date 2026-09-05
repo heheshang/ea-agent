@@ -351,9 +351,16 @@ public class AgentToolRegistry {
             Map<String, Object> args = input.get("args") instanceof Map
                     ? (Map<String, Object>) input.get("args")
                     : JsonUtils.readMapLenient(String.valueOf(input.get("args")));
+            Map<String, Object> norm = normalizeKeys(args);
+            // 智能运营活动创建必须携带触发规则（需求：agent 创建时 trigger_rule 不得为空）
+            String ruleErr = validateCreateCampaignRule(action, norm);
+            if (ruleErr != null) {
+                log.warn("applyAction rejected tenantId={} action={} reason={}", tenantId, action, ruleErr);
+                return Map.of("ok", false, "error", ruleErr);
+            }
             ActionContext ctx = ActionContext.of(tenantId, userId, role, "tool:" + UUID.randomUUID());
             ActionResult r = actionRegistry.get(action)
-                    .execute(ctx, com.eaagent.ontology.action.ActionRequest.of(normalizeKeys(args)));
+                    .execute(ctx, com.eaagent.ontology.action.ActionRequest.of(norm));
             Map<String, Object> out = r.data() == null ? new HashMap<>() : new HashMap<>(r.data());
             out.put("ok", r.success());
             return out;
@@ -384,6 +391,36 @@ public class AgentToolRegistry {
             }
         }
         return out;
+    }
+
+    /**
+     * agent 创建智能运营活动（createCampaign）必须携带触发规则 trigger_rule（含 event_type，
+     * 可含 window/cooldown）；缺失/空白拒绝并返回可读指引，LLM 据此补充或向用户澄清触发条件。
+     * 其余动作放行（web 创建等非 agent 路径不经此校验）。
+     */
+    static String validateCreateCampaignRule(String action, Map<String, Object> args) {
+        if (!"createCampaign".equals(action)) {
+            return null;
+        }
+        Object rule = args.get("trigger_rule");
+        Map<String, Object> ruleMap;
+        if (rule instanceof Map<?, ?>) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> m = (Map<String, Object>) rule;
+            ruleMap = m;
+        } else if (rule instanceof String s && !s.isBlank()) {
+            ruleMap = JsonUtils.readMapLenient(s);
+        } else {
+            ruleMap = null;
+        }
+        if (ruleMap == null || ruleMap.isEmpty()) {
+            return "创建活动必须附触发规则 trigger_rule（{\"event_type\":\"…\",\"window\":\"…\",\"cooldown\":\"…\"}）；用户未指定时先询问触发条件（事件类型、冷却窗），不得省略";
+        }
+        Object eventType = ruleMap.get("event_type");
+        if (eventType == null || String.valueOf(eventType).isBlank()) {
+            return "trigger_rule 必须含 event_type（如 \"order_placed\"），不能为空；用户未指定时先询问触发条件";
+        }
+        return null;
     }
 
     private static String toSnake(String k) {

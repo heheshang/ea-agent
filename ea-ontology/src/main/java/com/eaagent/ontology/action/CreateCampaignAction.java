@@ -32,7 +32,7 @@ public class CreateCampaignAction extends AbstractAction {
     public ActionMeta meta() {
         return ActionMeta.builder()
                 .name("createCampaign")
-                .description("创建触达任务（含灰度/AB/触发规则）")
+                .description("创建触达任务（灰度/AB/触发规则一次成型；trigger_rule 必填：含 event_type，可按需附 window/cooldown）")
                 .requiredArgs(List.of("name", "audience_id", "channel", "template_id"))
                 .permissions(List.of("OPERATOR"))
                 .build();
