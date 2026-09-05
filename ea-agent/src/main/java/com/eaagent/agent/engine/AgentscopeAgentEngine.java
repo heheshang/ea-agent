@@ -5,7 +5,9 @@ import com.eaagent.agent.tool.AgentToolRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.eaagent.ontology.mapper.AgentRunMapper;
+import com.eaagent.ontology.mapper.AgentToolCallMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
+import com.eaagent.ontology.model.AgentToolCallEntity;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -83,6 +85,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private final double cachedPrice;
     private final AgentToolRegistry toolRegistry;
     private final AgentRunMapper runMapper;
+    private final AgentToolCallMapper toolCallMapper;
     private final Map<String, HarnessAgent> sessions = new ConcurrentHashMap<>();
     /** 按 session 与 HarnessAgent 一一对应的统计采集器（stream 完成时 drain 落库）。 */
     private final Map<String, RunStatsMiddleware> statses = new ConcurrentHashMap<>();
@@ -96,7 +99,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
             @Value("${ea.agentscope.pricing.output:0.00000028}") double outputPrice,
             @Value("${ea.agentscope.pricing.cached:0.0000000028}") double cachedPrice,
             AgentToolRegistry toolRegistry,
-            AgentRunMapper runMapper) {
+            AgentRunMapper runMapper,
+            AgentToolCallMapper toolCallMapper) {
         this.model = model;
         this.apiKey = apiKey;
         this.baseUrl = baseUrl;
@@ -106,6 +110,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
         this.cachedPrice = cachedPrice;
         this.toolRegistry = toolRegistry;
         this.runMapper = runMapper;
+        this.toolCallMapper = toolCallMapper;
     }
 
     private Model resolveModel() {
@@ -249,6 +254,34 @@ public class AgentscopeAgentEngine implements AgentEngine {
         }
         Map<String, Object> usage = statsMw.drainUsage();
         java.util.List<Map<String, Object>> toolCalls = statsMw.drainToolCalls();
+        // 调用链明细表批量落库（与 tool_calls jsonb 同源；seq/target 由 middleware 已解析）
+        for (Map<String, Object> tc : toolCalls) {
+            AgentToolCallEntity tce = new AgentToolCallEntity();
+            tce.setTenantId(rc.tenantId());
+            tce.setRunId(Long.valueOf(rc.runId()));
+            Object seq = tc.get("seq");
+            tce.setSeq(seq == null ? null : ((Number) seq).intValue());
+            Object target = tc.get("target");
+            tce.setTarget(target == null ? null : String.valueOf(target));
+            String toolName = String.valueOf(tc.get("name"));
+            tce.setName(toolName);
+            if (target != null) {
+                tce.setKind("applyAction".equals(toolName) ? "action" : "function");
+            } else {
+                tce.setKind("tool");
+            }
+            tce.setArgs(String.valueOf(tc.get("params")));
+            Object dms = tc.get("duration_ms");
+            if (dms instanceof Number) {
+                tce.setDurationMs(((Number) dms).intValue());
+            }
+            tce.setOk(Boolean.TRUE.equals(tc.get("ok")));
+            Object err = tc.get("error");
+            if (err != null) {
+                tce.setError(String.valueOf(err));
+            }
+            toolCallMapper.insert(tce);
+        }
         Number input = (Number) usage.get("input_tokens");
         Number output = (Number) usage.get("output_tokens");
         Number cached = (Number) usage.get("cached_tokens");

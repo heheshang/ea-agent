@@ -48,6 +48,8 @@ public class RunStatsMiddleware implements MiddlewareBase {
     private final String sessionId;
     private final List<UsageAcc> usages = new ArrayList<>();
     private final List<Map<String, Object>> toolCalls = new ArrayList<>();
+    /** run 内工具调用序号（ToolResultEnd 完成顺序，1 起；供调用链回放）。 */
+    private int toolSeq = 0;
     /** 当前 run 的会话回顾注入条数（引擎 begin 时写入，落 prompt_info）。 */
     private int reviewCount = 0;
 
@@ -63,6 +65,7 @@ public class RunStatsMiddleware implements MiddlewareBase {
     /** 新一轮开始：清空上一轮累积（串行执行，否则同 session 并发会串数据）。 */
     public void begin(int reviewCount) {
         this.reviewCount = reviewCount;
+        toolSeq = 0;
         usages.clear();
         toolCalls.clear();
         actingStartNanos.clear();
@@ -121,6 +124,10 @@ public class RunStatsMiddleware implements MiddlewareBase {
                 m.put("duration_ms", t0 == null ? null : durationMs);
                 m.put("ok", ok);
                 m.put("error", ok ? null : e.getState().name());
+                // 调用链回放字段：run 内序号 / 工具调用 id / 入参解析出的动作·函数名
+                m.put("tool_call_id", e.getToolCallId());
+                m.put("seq", ++toolSeq);
+                m.put("target", parseTarget(block.getName(), block.getInput()));
                 toolCalls.add(m);
             }
         });
@@ -165,6 +172,47 @@ public class RunStatsMiddleware implements MiddlewareBase {
             }
         }
         return String.valueOf(input);
+    }
+
+    /**
+     * 从 applyAction / callFunction 调用入参解析动作/函数名（与 AgentStatsService 同语义）：
+     * applyAction → args.action，callFunction → args.name；其余工具返回 null。
+     */
+    private static String parseTarget(String toolName, Object input) {
+        if (!"applyAction".equals(toolName) && !"callFunction".equals(toolName)) {
+            return null;
+        }
+        String key = "applyAction".equals(toolName) ? "action" : "name";
+        if (input instanceof Map<?, ?>) {
+            Object v = ((Map<?, ?>) input).get(key);
+            return v == null ? null : String.valueOf(v);
+        }
+        String s = String.valueOf(input).trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        try {
+            Map<String, Object> map = JsonUtils.readMap(s);
+            Object v = map.get(key);
+            if (v != null) {
+                return String.valueOf(v);
+            }
+        } catch (Exception ignored) {
+            // 非 JSON（Java map toString），走下方正则
+        }
+        int i = s.indexOf(key + "=");
+        if (i >= 0) {
+            String rest = s.substring(i + key.length() + 1).trim();
+            int j = rest.indexOf(',');
+            if (j > 0) {
+                return rest.substring(0, j).trim();
+            }
+            j = rest.indexOf('}');
+            if (j > 0) {
+                return rest.substring(0, j).trim();
+            }
+        }
+        return null;
     }
 
     private static String truncate(String s, int limit) {

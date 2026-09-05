@@ -6,6 +6,8 @@
 
 ### Added
 
+- **调用链明细落库与回放**：新增 `agent_tool_call` 明细表（V5 迁移——tenant_id/run_id/seq/kind/name/target/args/duration_ms/ok/error，索引 `(tenant_id, run_id, seq)` 与 `(tenant_id, created_at)`）；引擎完成时与 `agent_run.tool_calls` 同源批量写入（middleware 采集时补齐 run 内序号 `seq`、工具调用 id、入参解析出的 `target`（applyAction→action、callFunction→name），kind 按 `tool|action|function` 映射；无租户插件，显式写 tenant_id 即可，不新增 SSE 事件，旧 jsonb 保留兼容）。新接口 `GET /api/agent/stats/run-trace?run_id=` 按 seq 升序返回单次 run 的真实调用链（存量 run 无明细行 → 空 trace 不报错）。
+- **Ontology 流程图调用链回放**：链路图上方新增「调用链回放」面板——run 下拉（近 30 次，`#id · 时间 · 摘要`）选择后自动播放：逐步点亮真实调用链路（引擎 → 工具 → Action/Function → 对象静态边），当前步节点红色描边 + 光晕、已走过节点淡红描边、活跃边红色虚线 `stroke-dashoffset` 逐帧流动（`@keyframes trace-flow`，0.7s 循环）；播放控制 ⏮/▶/⏸ + 速度 ×1/×2/×4 + 步骤指示（`第 k/N 步 · 工具名 → 目标` + 耗时/失败标记），播放至末尾自动停止；无明细的 run 提示「该 run 无工具调用明细」。
 - **Ontology 页对象数据信息**：
   - **对象节点下钻**：Ontology 链路图对象节点标注 `记录数`（租户维度动态安全计数）与 `字段数`（TypeRegistry 定义字段数）；点击对象节点弹出数据下钻弹窗——分页加载 `/api/objects/{type}` 实时对象数据（动态列、`加载更多` 游标翻页、`共 N 条`）。
   - **对象数据总览**：链路图下方新增「对象数据总览」表（7 个对象：记录数/字段数 + 操作列「数据」复用下钻弹窗、「跳转」直达 /customers、/campaigns）。
@@ -23,7 +25,17 @@
 - **错误码**：新增 17xxx Function 段（E-17001 Function 未注册），详细设计附录 B 同步
 - **触发规则参数优化**：campaign `trigger_rule` 的 cooldown/window 保存时支持宽松格式（`1h`/`30m`/`2d`/`90s`/纯数字秒/ISO-8601）并归一为 ISO-8601 落库（对齐详细设计 8.4 契约 `{"event_type","window":"1d","cooldown":"1h"}`）；非法格式保存即返回 E-13002 明确报错（此前保存成功、触发时 `Duration.parse` 500/DLQ）；event_type trim 并限长 64；创建/更新两路径统一接入，发送侧宽松解析兜底存量脏值；前端触发规则表单占位示例同步
 
+### Changed
+
+- **Ontology 流程图对象拓扑边随调用实线化**：`tool:X→obj`、`action:A→obj`、`function:F→obj` 静态拓扑边原恒为虚线，与「实线 = 有调用」语义冲突（如 `action:sendTouch→obj:delivery` 30 天调用 32 次仍虚线，调用链视觉断裂）。修复：对象边按源节点聚合自带 `calls/avg_ms/fails`，有调用即实线（未调用仍虚线，节点置灰语义保留）；前端对象边只作线型不出现在调用数标签中（`showLabel` 排除 `obj:` 目标），避免对象汇聚处标签拥挤。与幻觉动作名过滤配合，30 天窗口下全图 34 条边全部实线、节点全亮，链路完整。
+
+- **Ontology 调用链路图改为流程图**：由「分层列表 + 文字箭头」改为 SVG 流程图——5 条泳道（引擎/工具/Action/Function/对象）分支连线（实线 = 有调用、虚线 = 未激活静态拓扑），连线改为**正交折线路由**：竖线段走泳道间 38px 列间隙、跨泳道长边走上下两行盒子之间 16px 行间隙带（全程不压任何盒子），箭头落点按目标盒左缘**端口垂直均布**（同一对象多条入边不再汇聚同一点，间距 ≤ 12px），长链边调用次数/均耗时标签锚定行间隙带也不被盒子遮挡。对象节点保留记录数/字段数徽章与点击数据下钻，未调用节点置灰。
+
 ### Fixed
+
+- **Ontology 流程图未注册动作调用无痕丢失**：LLM 幻觉动作名（如 `updateCampaignCooldown`，不在 ActionRegistry）经 parseAction 解析成功后被计入 `engine→tool:applyAction` 路由计数、却因无动作节点映射而不生成节点/边，30 天窗口内 9 次调用在图上完全不可见（且 `engine→applyAction` 66 与各 action 边合计 57 不守恒）。修复：聚合循环对解析出的动作/函数名校验注册集（`actionToObject`/`functionToObject`），未注册名直接跳过双累计——路由边计数与 Action/Function 边合计恒等（57==57、59==59），幻觉调用（执行必失败、图上无拓扑）不再污染图数据。
+
+- **Ontology 流程图引擎→路由工具边恒为虚线**：`ontologyGraph` 运行时聚合把 `applyAction`/`callFunction` 的调用仅计入 action/function 拆分聚合（`tool:applyAction→action:X`、`tool:callFunction→function:X` 边），`toolAggs` 永不出现这两个工具名，导致 `engine→tool:applyAction`、`engine→tool:callFunction` 边统计缺失、前端按「未调用」渲染虚线；两条路由工具节点也随之置灰。修复：路由工具自身同样累计 `toolAggs`（引擎→工具边），拆分计数保留（提取 `accumulate` 复用），与统计页工具 TOP 口径一致。
 
 - **Agent 对话触达租户上下文缺失（E-11001）**：`SmsChannelAdapter.validate` 此前经 `TenantContext.requiredTenantId()` 取租户（HTTP 请求线程 ThreadLocal）；Agent 对话中 `applyAction(sendTouch)` 执行于 agentscope 线程（无 TenantContext），短信通道校验必现「租户上下文缺失」，工具结果形如 `{"error":"租户上下文缺失"}`（日志 `action done ok=false`）。通道接口 `validate(Map)` 改为 `validate(Long tenantId, Map)`（与 `send(DeliveryMessage)` 同样显式传租户），`SendTouchAction` 传入 `ActionContext` 租户；Email/Console 适配器签名同步。事件/调度链路（显式重建 TenantContext）与 HTTP 路径行为不变。
 

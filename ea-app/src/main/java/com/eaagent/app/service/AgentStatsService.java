@@ -3,7 +3,9 @@ package com.eaagent.app.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.ontology.mapper.AgentRunMapper;
+import com.eaagent.ontology.mapper.AgentToolCallMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
+import com.eaagent.ontology.model.AgentToolCallEntity;
 import com.eaagent.ontology.service.ObjectApiService;
 import com.eaagent.ontology.type.TypeRegistry;
 import org.springframework.stereotype.Service;
@@ -33,10 +35,12 @@ import java.util.stream.Collectors;
 public class AgentStatsService {
 
     private final AgentRunMapper runMapper;
+    private final AgentToolCallMapper toolCallMapper;
     private final ObjectApiService objectApi;
 
-    public AgentStatsService(AgentRunMapper runMapper, ObjectApiService objectApi) {
+    public AgentStatsService(AgentRunMapper runMapper, AgentToolCallMapper toolCallMapper, ObjectApiService objectApi) {
         this.runMapper = runMapper;
+        this.toolCallMapper = toolCallMapper;
         this.objectApi = objectApi;
     }
 
@@ -271,28 +275,24 @@ public class AgentStatsService {
             }
             for (Map<String, Object> tc : tcs) {
                 String name = str(tc.get("name"), "unknown");
-                ToolAgg agg;
                 if ("applyAction".equals(name)) {
                     String actName = parseAction(tc.get("params"));
-                    if (actName == null) {
+                    // 未解析出动作名或不在 ActionRegistry（LLM 幻觉动作名）→ 不入图，保证计数守恒
+                    if (actName == null || !actionToObject.containsKey(actName)) {
                         continue;
                     }
-                    agg = actionAggs.computeIfAbsent(actName, ToolAgg::new);
+                    // 路由工具自身也计一次（engine → tool:applyAction 边），再拆到具体动作（tool:applyAction → action:X 边）
+                    accumulate(toolAggs.computeIfAbsent(name, ToolAgg::new), tc);
+                    accumulate(actionAggs.computeIfAbsent(actName, ToolAgg::new), tc);
                 } else if ("callFunction".equals(name)) {
                     String fnName = parseFunction(tc.get("params"));
-                    if (fnName == null) {
+                    if (fnName == null || !functionToObject.containsKey(fnName)) {
                         continue;
                     }
-                    agg = functionAggs.computeIfAbsent(fnName, ToolAgg::new);
+                    accumulate(toolAggs.computeIfAbsent(name, ToolAgg::new), tc);
+                    accumulate(functionAggs.computeIfAbsent(fnName, ToolAgg::new), tc);
                 } else {
-                    agg = toolAggs.computeIfAbsent(name, ToolAgg::new);
-                }
-                agg.calls++;
-                Number ms = num(tc.get("duration_ms"));
-                agg.msSum += ms.longValue();
-                agg.msList.add(ms.doubleValue());
-                if (!Boolean.TRUE.equals(tc.get("ok"))) {
-                    agg.fails++;
+                    accumulate(toolAggs.computeIfAbsent(name, ToolAgg::new), tc);
                 }
             }
         }
@@ -356,18 +356,71 @@ public class AgentStatsService {
         }
         for (String t : toolToObject.keySet()) {
             String obj = toolToObject.get(t);
-            edges.add(Map.of("from", "tool:" + t, "to", "obj:" + obj));
+            ToolAgg a = toolAggs.get(t);
+            edges.add(a == null
+                    ? Map.of("from", "tool:" + t, "to", "obj:" + obj)
+                    : Map.of("from", "tool:" + t, "to", "obj:" + obj,
+                    "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
         for (String act : actionToObject.keySet()) {
-            edges.add(Map.of("from", "action:" + act, "to", "obj:" + actionToObject.get(act)));
+            String obj = actionToObject.get(act);
+            ToolAgg a = actionAggs.get(act);
+            edges.add(a == null
+                    ? Map.of("from", "action:" + act, "to", "obj:" + obj)
+                    : Map.of("from", "action:" + act, "to", "obj:" + obj,
+                    "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
         for (String fn : functionToObject.keySet()) {
-            edges.add(Map.of("from", "function:" + fn, "to", "obj:" + functionToObject.get(fn)));
+            String obj = functionToObject.get(fn);
+            ToolAgg a = functionAggs.get(fn);
+            edges.add(a == null
+                    ? Map.of("from", "function:" + fn, "to", "obj:" + obj)
+                    : Map.of("from", "function:" + fn, "to", "obj:" + obj,
+                    "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("nodes", nodes);
         out.put("edges", edges);
+        return out;
+    }
+
+    /**
+     * 单次 run 的真实调用链（/api/agent/stats/run-trace）：agent_tool_call 明细按 seq 升序，
+     * 供流程图「调用链回放」动效。旧 run 无明细行 → 返回空 trace（兼容，不报错）。
+     */
+    public Map<String, Object> runTrace(long tenantId, long runId) {
+        AgentRunEntity run = runMapper.selectOne(new QueryWrapper<AgentRunEntity>()
+                .eq(AgentRunEntity.COL_ID, runId)
+                .eq(AgentRunEntity.COL_TENANT_ID, tenantId));
+        if (run == null) {
+            return null;
+        }
+        List<AgentToolCallEntity> calls = toolCallMapper.selectList(new QueryWrapper<AgentToolCallEntity>()
+                .eq(AgentToolCallEntity.COL_TENANT_ID, tenantId)
+                .eq(AgentToolCallEntity.COL_RUN_ID, runId)
+                .orderByAsc(AgentToolCallEntity.COL_SEQ));
+        List<Map<String, Object>> trace = new ArrayList<>(calls.size());
+        for (AgentToolCallEntity c : calls) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("seq", c.getSeq());
+            m.put("kind", c.getKind());
+            m.put("name", c.getName());
+            m.put("target", c.getTarget());
+            m.put("args", c.getArgs());
+            m.put("duration_ms", c.getDurationMs());
+            m.put("ok", c.getOk());
+            m.put("error", c.getError());
+            trace.add(m);
+        }
+        Map<String, Object> runInfo = new LinkedHashMap<>();
+        runInfo.put("id", run.getId());
+        runInfo.put("created_at", run.getCreatedAt());
+        runInfo.put("status", run.getStatus());
+        runInfo.put("summary", run.getSummary());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("run", runInfo);
+        out.put("trace", trace);
         return out;
     }
 
@@ -381,6 +434,19 @@ public class AgentStatsService {
             qw.eq(AgentRunEntity.COL_SESSION_ID, sessionId);
         }
         return runMapper.selectList(qw);
+    }
+
+    /** 单条工具调用累加进聚合（calls/耗时/失败）。 */
+    private static void accumulate(ToolAgg agg, Map<String, Object> tc) {
+        agg.calls++;
+        Number ms = num(tc.get("duration_ms"));
+        if (ms != null) {
+            agg.msSum += ms.longValue();
+            agg.msList.add(ms.doubleValue());
+        }
+        if (!Boolean.TRUE.equals(tc.get("ok"))) {
+            agg.fails++;
+        }
     }
 
     /** 从 applyAction 调用参数中解析动作名（兼容 JSON 与 Java map toString 两种形态）。 */

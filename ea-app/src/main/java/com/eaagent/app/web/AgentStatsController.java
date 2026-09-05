@@ -40,4 +40,10 @@ public class AgentStatsController {
         return Result.ok(agentStatsService.ontologyGraph(TenantContext.requiredTenantId(),
                 Math.max(1, Math.min(days, 90)), session_id));
     }
+
+    /** 单次 run 的真实调用链明细（按 seq 升序），供流程图「调用链回放」动效。 */
+    @GetMapping("/run-trace")
+    public Result<Map<String, Object>> runTrace(@RequestParam("run_id") long runId) {
+        return Result.ok(agentStatsService.runTrace(TenantContext.requiredTenantId(), runId));
+    }
 }
