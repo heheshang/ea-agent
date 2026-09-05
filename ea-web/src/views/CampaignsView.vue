@@ -27,6 +27,25 @@ function channelLabel(code?: unknown) {
   return CHANNEL_LABELS[String(code ?? '')] ?? String(code ?? '-')
 }
 
+/** 解析后端冷静期文本（归一 ISO-8601 或宽松 1h/30m/90s/纯数字秒）为数值+单位；无法结构化（如 PT1M30S）返回 null，交由原文兜底。 */
+function parseCooldown(raw: string): { value: number; unit: 's' | 'm' | 'h' | 'd' } | null {
+  if (!raw) return null
+  const s = raw.trim()
+  let m = /^(\d+)([smhd])$/i.exec(s)
+  if (m) return { value: Number(m[1]), unit: m[2].toLowerCase() as 's' | 'm' | 'h' | 'd' }
+  m = /^(\d+)$/.exec(s)
+  if (m) return { value: Number(m[1]), unit: 's' }
+  m = /^PT(\d+)H$/i.exec(s)
+  if (m) return { value: Number(m[1]), unit: 'h' }
+  m = /^PT(\d+)M$/i.exec(s)
+  if (m) return { value: Number(m[1]), unit: 'm' }
+  m = /^PT(\d+)S$/i.exec(s)
+  if (m) return { value: Number(m[1]), unit: 's' }
+  m = /^P(\d+)D$/i.exec(s)
+  if (m) return { value: Number(m[1]), unit: 'd' }
+  return null
+}
+
 const emptyForm = () => ({
   id: null as number | null,
   name: '',
@@ -42,7 +61,9 @@ const emptyForm = () => ({
   template_routing_text: '',
   event_type: '',
   window: '',
-  cooldown: '',
+  cooldown_value: null as number | null,
+  cooldown_unit: 'h' as 's' | 'm' | 'h' | 'd',
+  cooldown_raw: '',
 })
 const form = reactive(emptyForm())
 
@@ -89,6 +110,11 @@ function openCreate() {
 
 function openEdit(row: Row) {
   const rule = (row.trigger_rule ?? {}) as Row
+  const cdRaw = rule.cooldown == null ? '' : String(rule.cooldown)
+  const cd = parseCooldown(cdRaw)
+  if (cdRaw && !cd) {
+    ElMessage.warning('冷静期原文无法结构化（如组合 ISO 时长），已保留原文可手动修改')
+  }
   Object.assign(form, {
     id: row.id as number,
     name: String(row.name ?? ''),
@@ -104,7 +130,9 @@ function openEdit(row: Row) {
     template_routing_text: row.template_routing ? JSON.stringify(row.template_routing, null, 2) : '',
     event_type: String(rule.event_type ?? ''),
     window: rule.window == null ? '' : String(rule.window),
-    cooldown: String(rule.cooldown ?? ''),
+    cooldown_value: cd ? cd.value : null,
+    cooldown_unit: cd ? cd.unit : 'h',
+    cooldown_raw: cd ? '' : cdRaw,
   })
   isEdit.value = true
   dialogVisible.value = true
@@ -171,7 +199,12 @@ async function save() {
   const rule: Row = {}
   if (form.event_type.trim()) rule.event_type = form.event_type.trim()
   if (String(form.window ?? '').trim() !== '') rule.window = String(form.window).trim()
-  if (form.cooldown.trim()) rule.cooldown = form.cooldown.trim()
+  const cdRaw = form.cooldown_raw.trim()
+  if (cdRaw) {
+    rule.cooldown = cdRaw
+  } else if (form.cooldown_value != null && form.cooldown_value > 0) {
+    rule.cooldown = `${form.cooldown_value}${form.cooldown_unit}`
+  }
   const body = {
     name: form.name.trim(),
     audienceId: form.audience_id,
@@ -329,7 +362,21 @@ onMounted(load)
         <div style="display: flex; flex-direction: column; gap: 8px; width: 100%">
           <el-input v-model="form.event_type" placeholder="事件类型，如 order_placed（留空则不事件触发）" />
           <el-input v-model="form.window" placeholder="时间窗，如 1d（预留，可留空）" />
-          <el-input v-model="form.cooldown" placeholder="冷却窗，如 1h / 30m / 2d / PT1H（留空默认 1 小时）" />
+        </div>
+      </el-form-item>
+      <el-form-item label="冷静期">
+        <div style="display: flex; flex-direction: column; gap: 8px; width: 100%">
+          <div style="display: flex; gap: 8px; width: 100%">
+            <el-input-number v-model="form.cooldown_value" :min="0" :step="1" style="width: 150px" placeholder="数值" />
+            <el-select v-model="form.cooldown_unit" style="width: 110px">
+              <el-option value="s" label="秒" />
+              <el-option value="m" label="分钟" />
+              <el-option value="h" label="小时" />
+              <el-option value="d" label="天" />
+            </el-select>
+            <el-input v-model="form.cooldown_raw" placeholder="ISO 原文如 PT1M30S（可选）" style="flex: 1" />
+          </div>
+          <div class="form-hint">同客户同活动在冷静期内仅发送一次；数值+单位留空且原文为空 = 不配置（默认 1 小时）</div>
         </div>
       </el-form-item>
     </el-form>
@@ -382,6 +429,11 @@ onMounted(load)
 }
 .board-card-meta .rule {
   word-break: break-all;
+}
+.form-hint {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
 }
 .board-card-actions {
   margin-top: 10px;
