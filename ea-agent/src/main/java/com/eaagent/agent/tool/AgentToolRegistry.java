@@ -188,7 +188,7 @@ public class AgentToolRegistry {
     class QueryCustomers extends BaseTool {
         QueryCustomers(Long tenantId, Long userId, String role) {
             super(tenantId, userId, role, "queryCustomers", "按 DSL 过滤表达式查询客户画像",
-                    schema(Map.of("filter", pStr("DSL 过滤，如 status == 'ACTIVE'、tags CONTAINS 'VIP'、attributes.gender == '男'"), "limit", pInt("返回条数上限，默认 20")), List.of("filter")));
+                    schema(Map.of("filter", pStr("DSL 过滤，如 status == 'ACTIVE'、tags CONTAINS 'VIP'、id <= 11、tags LIKE '%vip%'、attributes.gender == '男'"), "limit", pInt("返回条数上限，默认 20")), List.of("filter")));
         }
 
         @Override

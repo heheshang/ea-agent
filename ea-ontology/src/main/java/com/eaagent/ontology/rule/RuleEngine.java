@@ -20,12 +20,14 @@ import java.util.function.Consumer;
  * 人群/查询 DSL 引擎（3.2 EBNF）：
  * <pre>
  * expr     := orExpr
- * orExpr   := andExpr (('OR'|'||') andExpr)*
- * andExpr  := primary (('AND'|'&&') primary)*
+ * orExpr   := andExpr (('OR'|'||'|'or') andExpr)*
+ * andExpr  := primary (('AND'|'&&'|'and') primary)*
  * primary  := '(' expr ')' | predicate
  * predicate:= path op value
  * path     := ident ('.' ident)*
- * op       := '==' | '!=' | 'IN' | 'NOT IN' | 'CONTAINS' | 'BETWEEN' | 'EXISTS'
+ * op       := '=='|'='|'!='|'<'|'<='|'>'|'>='|'IN'|'NOT IN'|'CONTAINS'|'LIKE'|'BETWEEN'|'EXISTS'
+ *             （大小写不敏感，LLM 常见小写变体均兼容；单等号归一为 '=='）
+ * value    := '\'' string '\'' | '"' string '"' | number | bool | '[' value (',' value)* ']' | ident
  * </pre>
  * 编译产物为参数化 QueryWrapper（值全部 ? 绑定；列名来自白名单常量，杜绝注入）。
  * 白名单越界抛 E-12003；类型未知抛 E-12004。
@@ -105,22 +107,78 @@ public final class RuleEngine {
     private void applyJsonArray(QueryWrapper<?> w, String column, String op, Object value) {
         switch (op) {
             case "CONTAINS", "==" -> {
-                Object v = value instanceof List<?> list ? list : List.of(String.valueOf(value));
+                Object v = jsonArrayValue(value);
                 w.apply(column + " @> {0}::jsonb", JsonUtils.write(v));
             }
             case "!=" -> {
-                Object v = value instanceof List<?> list ? list : List.of(String.valueOf(value));
+                Object v = jsonArrayValue(value);
                 w.apply("NOT (" + column + " @> {0}::jsonb)", JsonUtils.write(v));
             }
             case "EXISTS" -> w.ne(column, "[]");
+            // LLM 常写 tags LIKE '%vip%'：jsonb 数组按文本 LIKE（cast 为 text，参数化防注入）
+            case "LIKE" -> w.apply("cast(" + column + " as text) LIKE {0}", String.valueOf(value));
+            // jsonb 数组 IN：任一成员包含即命中（OR 拼接 @>）
+            case "IN" -> {
+                List<?> vs = (List<?>) value;
+                for (int i = 0; i < vs.size(); i++) {
+                    String expr = column + " @> {0}::jsonb";
+                    Object item = JsonUtils.write(List.of(vs.get(i)));
+                    if (i == 0) {
+                        w.apply(expr, item);
+                    } else {
+                        w.or().apply(expr, item);
+                    }
+                }
+            }
+            case "NOT IN" -> {
+                List<?> vs = (List<?>) value;
+                if (!vs.isEmpty()) {
+                    StringBuilder expr = new StringBuilder("NOT (");
+                    String[] ph = new String[vs.size()];
+                    for (int i = 0; i < vs.size(); i++) {
+                        if (i > 0) {
+                            expr.append(" OR ");
+                        }
+                        expr.append(column).append(" @> {").append(i).append("}::jsonb");
+                        ph[i] = JsonUtils.write(List.of(vs.get(i)));
+                    }
+                    expr.append(")");
+                    w.apply(expr.toString(), (Object[]) ph);
+                }
+            }
             default -> throw new BizException(ErrorCode.DSL_PARSE_ERROR);
         }
+    }
+
+    /** 值归一：已是 List 直接用；JSON 数组文本（如 '["vip","gold"]'，LLM 常见形态）解析成 List；其余包装单元素。 */
+    private static Object jsonArrayValue(Object value) {
+        if (value instanceof List<?> list) {
+            return list;
+        }
+        String s = String.valueOf(value).trim();
+        if (s.startsWith("[")) {
+            try {
+                Object parsed = JsonUtils.read(s, new com.fasterxml.jackson.core.type.TypeReference<List<?>>() {
+                });
+                if (parsed instanceof List<?> list) {
+                    return list;
+                }
+            } catch (Exception ignored) {
+                // 非合法 JSON 数组文本：按单元素处理
+            }
+        }
+        return List.of(String.valueOf(value));
     }
 
     private void applyColumn(QueryWrapper<?> w, String column, String op, Object value, FieldType type) {
         switch (op) {
             case "==" -> w.eq(column, value);
             case "!=" -> w.ne(column, value);
+            case "<=" -> w.le(column, value);
+            case ">=" -> w.ge(column, value);
+            case "<" -> w.lt(column, value);
+            case ">" -> w.gt(column, value);
+            case "LIKE" -> w.like(column, String.valueOf(value));
             case "BETWEEN" -> {
                 List<?> v = (List<?>) value;
                 w.between(column, v.get(0), v.get(1));
@@ -270,12 +328,14 @@ public final class RuleEngine {
         }
 
         private String op() {
-            for (String candidate : new String[]{"NOT IN", "==", "!=", "BETWEEN", "CONTAINS", "EXISTS", "IN"}) {
+            // 按长度降序匹配；大小写不敏感（LLM 常输出小写 contains/in/and）；'=' 归一为 '=='
+            for (String candidate : new String[]{"NOT IN", "<=", ">=", "!=", "==", "=",
+                    "LIKE", "BETWEEN", "CONTAINS", "EXISTS", "IN", "<", ">"}) {
                 int save = pos;
                 skipWs();
-                if (src.startsWith(candidate, pos)) {
+                if (src.regionMatches(true, pos, candidate, 0, candidate.length())) {
                     pos += candidate.length();
-                    return candidate;
+                    return "=".equals(candidate) ? "==" : candidate;
                 }
                 pos = save;
             }
@@ -284,10 +344,12 @@ public final class RuleEngine {
 
         private Object value() {
             char c = src.charAt(pos);
-            if (c == '\'') {
+            // 单/双引号字符串等价（LLM 常输出 JSON 风格双引号）
+            if (c == '\'' || c == '"') {
+                char quote = c;
                 pos++;
                 StringBuilder sb = new StringBuilder();
-                while (pos < src.length() && src.charAt(pos) != '\'') {
+                while (pos < src.length() && src.charAt(pos) != quote) {
                     sb.append(src.charAt(pos));
                     pos++;
                 }
@@ -306,6 +368,7 @@ public final class RuleEngine {
                     return list;
                 }
                 while (true) {
+                    skipWs();
                     list.add(value());
                     skipWs();
                     if (pos < src.length() && src.charAt(pos) == ',') {
@@ -347,7 +410,7 @@ public final class RuleEngine {
         }
 
         private boolean matchWord(String word) {
-            if (!src.startsWith(word, pos)) {
+            if (!src.regionMatches(true, pos, word, 0, word.length())) {
                 return false;
             }
             int end = pos + word.length();
