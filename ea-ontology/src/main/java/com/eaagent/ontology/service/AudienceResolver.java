@@ -39,7 +39,10 @@ public class AudienceResolver {
             return customerMapper.selectList(new QueryWrapper<CustomerEntity>()
                     .eq(CustomerEntity.COL_TENANT_ID, tenantId).in(CustomerEntity.COL_ID, ids));
         }
-        // DYNAMIC：DSL 编译 + 租户过滤
+        // DYNAMIC：DSL 编译 + 租户过滤（空规则 = 无 WHERE = 租户全量匹配，DB CHECK 已禁空规则，防御仍加，杜绝 match-all 兜底）
+        if (audience.getRule() == null || audience.getRule().isBlank()) {
+            throw new BizException(ErrorCode.DSL_PARSE_ERROR, "DYNAMIC 人群缺少规则，不能派生成员");
+        }
         QueryWrapper<?> w = ruleEngine.compile(TypeRegistry.get("customer"), audience.getRule());
         w.eq(CustomerEntity.COL_TENANT_ID, tenantId);
         @SuppressWarnings("unchecked")

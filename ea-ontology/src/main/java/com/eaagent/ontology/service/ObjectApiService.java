@@ -311,7 +311,8 @@ public class ObjectApiService {
         // JsonUtils.toMap 输出驼峰 key（Jackson convertValue），API 契约用下划线名
         for (String[] entry : new String[][]{
                 {"attributes", "attributes"}, {"payload", "payload"}, {"abVariants", "ab_variants"},
-                {"triggerRule", "trigger_rule"}, {"frequencyLimit", "frequency_limit"}, {"tags", "tags"}}) {
+                {"triggerRule", "trigger_rule"}, {"frequencyLimit", "frequency_limit"}, {"tags", "tags"},
+                {"audienceSnapshot", "audience_snapshot"}}) {
             Object v = src.get(entry[0]);
             if (v != null) {
                 out.put(entry[1], v);

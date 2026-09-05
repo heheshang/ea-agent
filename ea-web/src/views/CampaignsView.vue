@@ -27,6 +27,14 @@ function channelLabel(code?: unknown) {
   return CHANNEL_LABELS[String(code ?? '')] ?? String(code ?? '-')
 }
 
+/** 目标人群展示：audience_snapshot {audience_name, member_count, snapshot_at}；未快照的存量活动显示 '-'。 */
+function fmtAudienceSnapshot(snap?: Row | null) {
+  if (!snap) return '-'
+  const name = String(snap.audience_name ?? snap.name ?? '')
+  const count = snap.member_count ?? 0
+  return `${name}（${count} 人）`
+}
+
 /** 解析后端冷静期文本（归一 ISO-8601 或宽松 1h/30m/90s/纯数字秒）为数值+单位；无法结构化（如 PT1M30S）返回 null，交由原文兜底。 */
 function parseCooldown(raw: string): { value: number; unit: 's' | 'm' | 'h' | 'd' } | null {
   if (!raw) return null
@@ -280,6 +288,11 @@ onMounted(load)
           <span v-else style="color: #c0c4cc">-</span>
         </template>
       </el-table-column>
+      <el-table-column label="目标人群" min-width="170">
+        <template #default="{ row }">
+          <span>{{ fmtAudienceSnapshot(row.audience_snapshot) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="trigger(row)">触发</el-button>
@@ -298,6 +311,7 @@ onMounted(load)
             <div class="board-card-title" @click="openEdit(row)">{{ row.name }}</div>
             <div class="board-card-meta">
               <div>通道：{{ channelLabel(row.channel) }}</div>
+              <div>人群：{{ fmtAudienceSnapshot(row.audience_snapshot) }}</div>
               <div>灰度：{{ row.gray_ratio ?? 100 }}%</div>
               <div>AB：{{ row.ab_mode ?? 'NONE' }}</div>
               <div class="rule">规则：{{ JSON.stringify(row.trigger_rule ?? {}) }}</div>
@@ -322,6 +336,7 @@ onMounted(load)
         <el-select v-model="form.audience_id" filterable placeholder="选择人群" style="width: 100%">
           <el-option v-for="a in audiences" :key="a.id" :value="a.id" :label="`${a.name}（ID ${a.id}）`" />
         </el-select>
+        <div style="color: #909399; font-size: 12px; line-height: 1.5; margin-top: 4px">创建时按所选人群固化发送范围（快照）；之后修改人群规则不影响本活动。</div>
       </el-form-item>
       <el-form-item label="模板" required>
         <el-select v-model="form.template_id" filterable placeholder="选择模板" style="width: 100%">

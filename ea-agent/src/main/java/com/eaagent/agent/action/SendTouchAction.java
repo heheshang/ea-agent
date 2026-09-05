@@ -14,20 +14,18 @@ import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionMeta;
 import com.eaagent.ontology.action.ActionRequest;
 import com.eaagent.ontology.mapper.ActionLogMapper;
-import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
 import com.eaagent.ontology.mapper.DeliveryMapper;
 import com.eaagent.ontology.mapper.TemplateMapper;
 import com.eaagent.ontology.mapper.UnsubscribeMapper;
-import com.eaagent.ontology.model.AudienceEntity;
 import com.eaagent.ontology.model.CampaignEntity;
 import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.DeliveryEntity;
 import com.eaagent.ontology.model.TemplateEntity;
 import com.eaagent.ontology.model.UnsubscribeEntity;
 import com.eaagent.ontology.service.AbBucketer;
-import com.eaagent.ontology.service.AudienceResolver;
+import com.eaagent.ontology.service.AudienceSnapshotService;
 import com.eaagent.ontology.service.CooldownService;
 import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -49,32 +47,30 @@ import java.util.UUID;
 public class SendTouchAction extends AbstractAction {
 
     private final CampaignMapper campaignMapper;
-    private final AudienceMapper audienceMapper;
     private final TemplateMapper templateMapper;
     private final CustomerMapper customerMapper;
     private final DeliveryMapper deliveryMapper;
     private final UnsubscribeMapper unsubscribeMapper;
-    private final AudienceResolver audienceResolver;
+    private final AudienceSnapshotService snapshotService;
     private final CooldownService cooldownService;
     private final AbBucketer abBucketer;
     private final ChannelAdapterRegistry channelRegistry;
     private final TemplateRoutingService templateRoutingService;
 
     public SendTouchAction(ActionLogMapper actionLogMapper, IdempotencyService idempotencyService,
-                           StringRedisTemplate redis, CampaignMapper campaignMapper, AudienceMapper audienceMapper,
+                           StringRedisTemplate redis, CampaignMapper campaignMapper,
                            TemplateMapper templateMapper, CustomerMapper customerMapper,
                            DeliveryMapper deliveryMapper, UnsubscribeMapper unsubscribeMapper,
-                           AudienceResolver audienceResolver, CooldownService cooldownService,
+                           AudienceSnapshotService snapshotService, CooldownService cooldownService,
                            AbBucketer abBucketer, ChannelAdapterRegistry channelRegistry,
                            TemplateRoutingService templateRoutingService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
-        this.audienceMapper = audienceMapper;
         this.templateMapper = templateMapper;
         this.customerMapper = customerMapper;
         this.deliveryMapper = deliveryMapper;
         this.unsubscribeMapper = unsubscribeMapper;
-        this.audienceResolver = audienceResolver;
+        this.snapshotService = snapshotService;
         this.cooldownService = cooldownService;
         this.abBucketer = abBucketer;
         this.channelRegistry = channelRegistry;
@@ -102,10 +98,8 @@ public class SendTouchAction extends AbstractAction {
         String eventType = req.getString("event_type");
         Map<String, Object> eventPayload = req.getMap("event_payload");
         Map<Long, TemplateEntity> tplCache = new HashMap<>();
-        AudienceEntity audience = audienceMapper.selectById(campaign.getAudienceId());
-        if (audience == null) {
-            throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
-        }
+        // 人群来源 = 活动快照（创建/换人群时固化；存量活动首次发送惰性回填），绝不实时重算
+        List<Long> memberIds = snapshotService.memberIds(tenantId, campaign);
         ChannelAdapter adapter = channelRegistry.get(campaign.getChannel());
         adapter.validate(tenantId, Map.of());
 
@@ -120,7 +114,9 @@ public class SendTouchAction extends AbstractAction {
             cooldown = Duration.ofHours(1);
         }
 
-        List<CustomerEntity> customers = audienceResolver.resolve(tenantId, audience);
+        List<CustomerEntity> customers = memberIds.isEmpty() ? List.of()
+                : customerMapper.selectList(new QueryWrapper<CustomerEntity>()
+                        .eq(CustomerEntity.COL_TENANT_ID, tenantId).in(CustomerEntity.COL_ID, memberIds));
         int sent = 0, unsubscribed = 0, cooling = 0, graySkipped = 0, failed = 0;
         for (CustomerEntity c : customers) {
             // 1. 退订检查

@@ -155,6 +155,7 @@ flowchart LR
 
 要点：
 
+- **发送对象 = 人群快照**：`campaign.audience_snapshot`（jsonb，V10）在活动**创建/改绑人群时**由 `AudienceSnapshotService` 固化（`audience_id/audience_name/mode/rule/member_count/customer_ids/snapshot_at`）；`sendTouch` 只枚举快照成员、**不再对 `audience.rule` 实时重算**（防规则漂移导致全量误发；空快照=发 0 人）。存量无快照活动首次发送前惰性现算并回填 campaign 行。
 - **幂等双闸**：Redis `IdempotencyService`（SETNX `ea:idem:{tenant}:{requestId}`，2.2）先滤，`delivery UNIQUE (tenant_id, request_id)`（762 行）落库兜底并发；重复请求返回首次结果。
 - 业务校验在写库前完成（9.5）：频控计数 `ea:fc:{tenant}:{channel}:{customerId}:{date}`、退订查 `unsubscribe`（租户级 + 全局 customer_key 匹配，E-13005）、时段 `quiet_hours`（E-13007）——**避免无效 delivery 落库**。
 - 灰度（4.4）：随机抽样命中才写 `delivery.gray_hit = true`（E），审批判定「全量=100%」由 `chk_campaign_gray` CHECK（713 行）保证合法区间。
@@ -253,7 +254,7 @@ flowchart LR
 
 要点：
 
-- DYNAMIC 人群（v1.1 定案 A）：`audience_member` 仅承载 STATIC；DYNAMIC 的「成员」是 `RuleEngine` 实时执行 `rule` DSL 的派生查询，不落成员表（3.3）。
+- DYNAMIC 人群（v1.1 定案 A）：`audience_member` 仅承载 STATIC；DYNAMIC 的「成员」是 `RuleEngine` 实时执行 `rule` DSL 的派生查询，不落成员表（3.3）——派生查询供 createAudience 预览计数与 queryAudience 展示；**触达一律以 campaign 固化快照为准**（3.4 发送对象 = 人群快照）。
 - 模板审核门控：模板须 `APPROVED` 才可被触达复用（发送管线校验）；`template UNIQUE (tenant_id, id)` 供 campaign/delivery 复合 FK（730 行）。
 - 复合 FK 纵深：campaign → audience/template、audience_member → audience/customer、delivery → campaign/customer/template 全部 `REFERENCES x(tenant_id, id)`（v1.3 加固）——DDL 层面拒绝跨租户引用，应用层 5.4 归属校验第二道。
 - 通道配置密文：`config_encrypted` + `callback_secret` 信封加密（9.3），`UNIQUE (tenant_id, channel)`（742 行）。

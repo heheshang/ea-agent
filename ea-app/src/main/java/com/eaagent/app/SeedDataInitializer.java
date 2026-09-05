@@ -23,6 +23,7 @@ import com.eaagent.ontology.model.TemplateEntity;
 import com.eaagent.ontology.model.TenantEntity;
 import com.eaagent.ontology.model.TenantUserEntity;
 import com.eaagent.ontology.model.UnsubscribeEntity;
+import com.eaagent.ontology.service.AudienceSnapshotService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -54,6 +55,7 @@ public class SeedDataInitializer implements ApplicationRunner {
     private final UnsubscribeMapper unsubscribeMapper;
     private final KnowledgeMapper knowledgeMapper;
     private final KnowledgeBaseService knowledgeService;
+    private final AudienceSnapshotService snapshotService;
     private final PasswordEncoder encoder;
     private final CryptoService cryptoService;
     private final boolean enabled;
@@ -64,6 +66,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                                CustomerMapper customerMapper, UnsubscribeMapper unsubscribeMapper,
                                KnowledgeMapper knowledgeMapper,
                                KnowledgeBaseService knowledgeService,
+                               AudienceSnapshotService snapshotService,
                                PasswordEncoder encoder, CryptoService cryptoService,
                                @Value("${ea.seed.enabled:true}") boolean enabled) {
         this.tenantMapper = tenantMapper;
@@ -76,6 +79,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         this.unsubscribeMapper = unsubscribeMapper;
         this.knowledgeMapper = knowledgeMapper;
         this.knowledgeService = knowledgeService;
+        this.snapshotService = snapshotService;
         this.encoder = encoder;
         this.cryptoService = cryptoService;
         this.enabled = enabled;
@@ -104,8 +108,9 @@ public class SeedDataInitializer implements ApplicationRunner {
         seedEmailChannel(tenantId);
         Long audienceId = seedAudience(tenantId, adminId);
         Long templateId = seedTemplate(tenantId);
-        seedCampaign(tenantId, adminId, audienceId, templateId);
+        // 客户先于活动：活动创建时固化人群快照（member_count/customer_ids 需客户已存在）
         seedCustomers(tenantId);
+        seedCampaign(tenantId, adminId, audienceId, templateId);
         seedUnsubscribe(tenantId);
         seedKnowledge(tenantId);
         log.info("demo seed done: tenant={} admin={}", tenantId, adminId);
@@ -230,6 +235,8 @@ public class SeedDataInitializer implements ApplicationRunner {
         c.setTenantId(tenantId);
         c.setName("新人复购提醒");
         c.setAudienceId(audienceId);
+        // 活动创建即固化人群快照；存量/新建活动发送一律以快照为准（不与人群规则实时漂移）
+        c.setAudienceSnapshot(snapshotService.build(tenantId, audienceId));
         c.setChannel("console");
         c.setTemplateId(templateId);
         c.setGrayRatio(100);

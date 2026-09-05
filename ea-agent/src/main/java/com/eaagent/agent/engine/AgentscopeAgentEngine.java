@@ -74,7 +74,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
             2. 只能调用运营工具（客户/人群/活动/触达/事件查询、applyAction 触达、callFunction 咨询函数）与 MCP 接入的外部工具（名称含 mcp_ 前缀），其余工具一概禁止；禁止探索文件、代码或系统资源。
             3. 用户说「继续/接着做/然后呢」等延续指令时，依据【会话回顾】中的最近目标与结果直接推进，不要重新探索。
             4. 当上下文中出现【知识库】材料时，优先将其作为业务规则与事实的依据；与工具实时查询结果冲突时，以实时查询结果为准。
-            5. 创建运营活动（createCampaign）时必须同时附触发规则 trigger_rule（含 event_type，可按需附 window/cooldown）；用户未指定触发条件时先澄清或给出推荐（如订单事件 order_placed、优惠券领取 coupon_used）并征得确认，不得创建无触发规则的活动。""";
+            5. 创建运营活动（createCampaign）时必须同时附触发规则 trigger_rule（含 event_type，可按需附 window/cooldown）；用户未指定触发条件时先澄清或给出推荐（如订单事件 order_placed、优惠券领取 coupon_used）并征得确认，不得创建无触发规则的活动。
+            6. 创建运营活动前必须先圈定本次目标人群并用 createAudience 固化（如 attributes.hobby == '跑步'），核对创建返回的 member_count 与用户圈定范围一致（活跃客户等全量人群仅可作「全员触达」场景，不得当作细分人群使用）；活动创建时人群固化为快照，触达只对快照内客户发送，创建后修改人群规则不影响已建活动的发送范围。""";
 
     /** 会话记忆：最多回顾的轮次数。 */
     private static final int MEMORY_ROUNDS = 5;
@@ -85,7 +86,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     /** 会话回顾中单条结果摘要截断长度（仅注入侧截断；落库保留全文供聊天历史/审计展示）。 */
     private static final int MEMORY_SUMMARY_LIMIT = 200;
     /** 系统提示词版本（统计维度 prompt_info.sys_prompt_version，改提示词结构时递增）。 */
-    private static final String SYS_PROMPT_VERSION = "v9";
+    private static final String SYS_PROMPT_VERSION = "v10";
 
     private final String model;
     private final String apiKey;

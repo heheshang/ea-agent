@@ -352,7 +352,7 @@ LLM 输出不可信，**隔离不能依赖 prompt，必须执行层强制**：
 
 ### 8.1 领域模型关系
 
-客户 ∈ 人群（多对多，成员快照可选）；触达任务 → 人群 + 渠道 + 模板；触达记录 → 客户 + 任务；事件 → 客户（可选）；全部实体归属租户。
+客户 ∈ 人群（多对多，成员快照可选；**触达任务创建时固化人群成员快照 `campaign.audience_snapshot`，发送只对快照**）；触达任务 → 人群 + 渠道 + 模板；触达记录 → 客户 + 任务；事件 → 客户（可选）；全部实体归属租户。
 
 ### 8.2 物理模型草案（PostgreSQL）
 
@@ -366,7 +366,8 @@ audience        (id, tenant_id, name, mode, rule, owner_id, status, created_at)
                 -- mode: DYNAMIC(规则派生)|STATIC(成员表)；rule 与成员互斥
 audience_member (tenant_id, audience_id, customer_id, created_at)
 
-campaign        (id, tenant_id, name, audience_id, channel, template_id,
+campaign        (id, tenant_id, name, audience_id, audience_snapshot jsonb,
+                 channel, template_id,
                  schedule, gray_ratio, owner_id, status, ...)
 template        (id, tenant_id, channel, title, content, vars jsonb, status,
                  review_status)

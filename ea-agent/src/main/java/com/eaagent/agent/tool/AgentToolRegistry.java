@@ -8,18 +8,17 @@ import com.eaagent.ontology.action.ActionResult;
 import com.eaagent.ontology.function.Function;
 import com.eaagent.ontology.function.FunctionRegistry;
 import com.eaagent.ontology.mapper.AudienceMapper;
-import com.eaagent.ontology.mapper.AudienceMemberMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
 import com.eaagent.ontology.mapper.DeliveryMapper;
 import com.eaagent.ontology.mapper.EventMapper;
 import com.eaagent.ontology.model.AudienceEntity;
-import com.eaagent.ontology.model.AudienceMemberEntity;
 import com.eaagent.ontology.model.CampaignEntity;
 import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.DeliveryEntity;
 import com.eaagent.ontology.model.EventEntity;
 import com.eaagent.ontology.rule.RuleEngine;
+import com.eaagent.ontology.service.AudienceResolver;
 import com.eaagent.ontology.type.TypeRegistry;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
@@ -52,26 +51,25 @@ public class AgentToolRegistry {
     private final DeliveryMapper deliveryMapper;
     private final EventMapper eventMapper;
     private final AudienceMapper audienceMapper;
-    private final AudienceMemberMapper audienceMemberMapper;
     private final ActionRegistry actionRegistry;
     private final FunctionRegistry functionRegistry;
     private final RuleEngine ruleEngine;
+    private final AudienceResolver audienceResolver;
 
     public AgentToolRegistry(CustomerMapper customerMapper, CampaignMapper campaignMapper,
                              DeliveryMapper deliveryMapper, EventMapper eventMapper,
                              AudienceMapper audienceMapper,
-                             AudienceMemberMapper audienceMemberMapper,
                              ActionRegistry actionRegistry, FunctionRegistry functionRegistry,
-                             RuleEngine ruleEngine) {
+                             RuleEngine ruleEngine, AudienceResolver audienceResolver) {
         this.customerMapper = customerMapper;
         this.campaignMapper = campaignMapper;
         this.deliveryMapper = deliveryMapper;
         this.eventMapper = eventMapper;
         this.audienceMapper = audienceMapper;
-        this.audienceMemberMapper = audienceMemberMapper;
         this.actionRegistry = actionRegistry;
         this.functionRegistry = functionRegistry;
         this.ruleEngine = ruleEngine;
+        this.audienceResolver = audienceResolver;
     }
 
     /** 基础 Toolkit（资源型工具，非租户绑定）。 */
@@ -215,14 +213,19 @@ public class AgentToolRegistry {
         @Override
         protected Map<String, Object> execute(Map<String, Object> input) {
             long id = Long.parseLong(String.valueOf(input.get("audience_id")));
-            Long memberCount = audienceMemberMapper.selectCount(new QueryWrapper<AudienceMemberEntity>()
-                    .eq(AudienceMemberEntity.COL_TENANT_ID, tenantId)
-                    .eq(AudienceMemberEntity.COL_AUDIENCE_ID, id));
             AudienceEntity a = audienceMapper.selectOne(new QueryWrapper<AudienceEntity>()
                     .eq(AudienceEntity.COL_TENANT_ID, tenantId)
                     .eq(AudienceEntity.COL_ID, id));
-            return Map.of("audience_id", id, "rule", a == null ? null : JsonUtils.write(a.getRule()),
-                    "member_count", memberCount);
+            // member_count 统一按成员解析（DYNAMIC=规则派生 / STATIC=成员表），否则 DYNAMIC 人群恒为 0，
+            // Agent 无法预知「活跃客户」≈全量而误绑全量人群
+            Long memberCount = a == null ? 0L : (long) audienceResolver.resolve(tenantId, a).size();
+            Map<String, Object> out = new HashMap<>();
+            out.put("audience_id", id);
+            out.put("name", a == null ? null : a.getName());
+            out.put("mode", a == null ? null : a.getMode());
+            out.put("rule", a == null ? null : JsonUtils.write(a.getRule()));
+            out.put("member_count", memberCount);
+            return out;
         }
     }
 

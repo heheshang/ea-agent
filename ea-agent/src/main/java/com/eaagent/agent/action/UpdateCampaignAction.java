@@ -13,6 +13,7 @@ import com.eaagent.ontology.action.ActionRequest;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.model.CampaignEntity;
+import com.eaagent.ontology.service.AudienceSnapshotService;
 import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -35,13 +36,16 @@ public class UpdateCampaignAction extends AbstractAction {
 
     private final CampaignMapper campaignMapper;
     private final TemplateRoutingService templateRoutingService;
+    private final AudienceSnapshotService snapshotService;
 
     public UpdateCampaignAction(ActionLogMapper actionLogMapper, IdempotencyService idempotencyService,
                                 StringRedisTemplate redis, CampaignMapper campaignMapper,
-                                TemplateRoutingService templateRoutingService) {
+                                TemplateRoutingService templateRoutingService,
+                                AudienceSnapshotService snapshotService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
         this.templateRoutingService = templateRoutingService;
+        this.snapshotService = snapshotService;
     }
 
     @Override
@@ -100,8 +104,10 @@ public class UpdateCampaignAction extends AbstractAction {
             c.setName(name);
         }
         Long audienceId = req.getLong("audience_id");
-        if (audienceId != null) {
+        if (audienceId != null && !audienceId.equals(c.getAudienceId())) {
+            // 换人群 → 重新固化快照（同值重复提交保留原快照，范围不漂移）
             c.setAudienceId(audienceId);
+            c.setAudienceSnapshot(snapshotService.build(ctx.tenantId(), audienceId));
         }
         if (channel != null && !channel.isBlank()) {
             c.setChannel(channel);

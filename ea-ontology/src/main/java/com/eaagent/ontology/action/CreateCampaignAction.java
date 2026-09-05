@@ -6,6 +6,7 @@ import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.model.CampaignEntity;
+import com.eaagent.ontology.service.AudienceSnapshotService;
 import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -24,13 +25,16 @@ public class CreateCampaignAction extends AbstractAction {
 
     private final CampaignMapper campaignMapper;
     private final TemplateRoutingService templateRoutingService;
+    private final AudienceSnapshotService snapshotService;
 
     public CreateCampaignAction(ActionLogMapper actionLogMapper, IdempotencyService idempotencyService,
                                 StringRedisTemplate redis, CampaignMapper campaignMapper,
-                                TemplateRoutingService templateRoutingService) {
+                                TemplateRoutingService templateRoutingService,
+                                AudienceSnapshotService snapshotService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
         this.templateRoutingService = templateRoutingService;
+        this.snapshotService = snapshotService;
     }
 
     @Override
@@ -66,11 +70,15 @@ public class CreateCampaignAction extends AbstractAction {
         c.setStatus(CampaignEntity.STATUS_DRAFT);
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
+        // 人群固化为快照（audience 不存在/规则非法：落库前报错，无半成品行）；触达只对快照内客户
+        c.setAudienceSnapshot(snapshotService.build(ctx.tenantId(), c.getAudienceId()));
         campaignMapper.insert(c);
 
         Map<String, Object> out = new HashMap<>();
         out.put("campaign_id", c.getId());
         out.put("status", c.getStatus());
+        Object memberCount = c.getAudienceSnapshot() == null ? null : c.getAudienceSnapshot().get("member_count");
+        out.put("audience_member_count", memberCount);
         return out;
     }
 }

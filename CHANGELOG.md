@@ -6,6 +6,7 @@
 
 ### Added
 
+- **createAudience 圈定人群 Action**：Agent 可创建定向人群（`rule` DSL 或 `member_customer_ids` 静态成员二选一；无 rule 且无成员 → E-13002 拒绝，DYNAMIC 落库前 resolve 预览计数、STATIC 先插人群再逐条写 `audience_member`），返回 `{audience_id,name,mode,rule,member_count}`；`queryAudience` 计数修正为 `resolve().size()`（修复 DYNAMIC 恒 0、audience 不存在 NPE），与提示词 v10 一道让 Agent 核对人群规模后再建活动（根因闭环：此前无圈定路径只能绑"活跃客户"全量人群）。对象 API 暴露 `audience_snapshot`（GetCampaign/列表），Web Campaigns 列表新增「目标人群」列与看板「人群：」行。
 - **知识库（租户维度 RAG）**：新增 `knowledge` 表（V6 迁移——tenant_id/title/content/tags(jsonb)/enabled/时间戳，索引 `(tenant_id, enabled, updated_at DESC)`）；管理接口 `GET|POST /api/knowledge`、`GET|PUT|DELETE /api/knowledge/{id}`（分页/关键字过滤、物理删除 E-12007）+ `GET /api/knowledge/search` 试检索预览。对话时（AgentscopeAgentEngine 每轮）以同一 pgvector 余弦检索 topK 相关条目注入「【知识库】」用户消息（与「会话回顾」同注入消息模式，HarnessAgent 按 session 缓存不刷 sysPrompt）；检索迁移至 Postgres pgvector（V7 迁移——`embedding vector(256)` 列 + HNSW 索引，compose 镜像随迁 `pgvector/pgvector:pg16`）：词元（CJK 字符 bigram / latin 词）按标题×3/标签×2/内容×1 加权做特征哈希（hashing trick，双哈希 256 维带符号累加 + L2 归一，零外部 embedding API），排名由 SQL `<=>` 余弦距离完成、阈值 0.1 等价旧 2 分下限过滤弱命中文案，另加词覆盖校验剔除哈希碰撞噪声（无共同词不入选，等价旧"无命中不入选"语义）；写入即维护向量、启动幂等回填存量（`embedding IS NULL`），命中得分由 int 加权分改为 double 余弦相似度（0..1，前端展示不变）。`SYS_PROMPT_VERSION` v6→v7（知识库材料优先作业务依据，与实时查询冲突以实时为准），统计 prompt_info 新增 `kb_hits`，`ea.knowledge.top-k`（默认 3）控注入条数。seed 幂等落 3 条演示条目（退订规范/冷却窗/灰度发布）。前端新增「📚 知识库」页（表格 + 新建/编辑对话框 + 启停开关 + 删除确认 + 试检索面板）。
 
 - **MCP 外部工具接入**：`ea.agentscope.mcp.servers` 配置驱动（`name`/`transport`/`url` 或 `command`+`args`+`env`/`headers`；支持 stdio / streamable-http / sse 三传输），Jackson 解析 + 惰性构建（不随应用启动连外部 server），单 server 构建/注册失败降级不阻断；wrapper 按 name 全局缓存、随会话装配进 Toolkit（`mcp_` 前缀工具与本地 7 工具同等注册可见、可被 LLM 调用）。MCP 工具以 ToolBase 注册，库默认权限语义「非只读工具每次调用需人工授权（ASK）」会让无人值守引擎的工具调用悬空（只发确认请求、工具不执行）——引擎装配后按会话切 `PermissionMode.BYPASS` 全量放行（库级 API，持久化到会话槽）。系统提示词约束 2 扩展 MCP 工具域，`SYS_PROMPT_VERSION` v5→v6。
@@ -45,6 +46,8 @@
 - **Ontology 调用链路图改为流程图**：由「分层列表 + 文字箭头」改为 SVG 流程图——5 条泳道（引擎/工具/Action/Function/对象）分支连线（实线 = 有调用、虚线 = 未激活静态拓扑），连线改为**正交折线路由**：竖线段走泳道间 38px 列间隙、跨泳道长边走上下两行盒子之间 16px 行间隙带（全程不压任何盒子），箭头落点按目标盒左缘**端口垂直均布**（同一对象多条入边不再汇聚同一点，间距 ≤ 12px），长链边调用次数/均耗时标签锚定行间隙带也不被盒子遮挡。对象节点保留记录数/字段数徽章与点击数据下钻，未调用节点置灰。
 
 ### Fixed
+
+- **触达圈定人群失效（活动误发全量客户）**：根因链——(1) 发送时对 `campaign.audience_id` **实时重算**人群、无任何快照：`sendTouch` 每次触发都重新执行 `audience.rule` DSL，人群规则一改（如"跑步"改成全量条件）即波及已建活动；(2) Agent 侧无圈定人群路径，系统仅"活跃客户"（≈全量）与"邮件验证"两个人群，圈定"跑步"的活动实际绑到活跃客户全量（campaign 22 → 10052 客户）；(3) `queryAudience` 对 DYNAMIC 恒报 0 人，Agent 无法核对规模。修复：campaign 新建/改绑人群时经 `AudienceSnapshotService` **固化 `audience_snapshot` jsonb**（audience_id/audience_name/mode/rule/member_count/customer_ids/snapshot_at；V10 迁移），发送只读快照**不再实时重算**（空快照=空发送）；存量无快照活动（campaign 1/22）首次发送前惰性现算并回填；`AudienceResolver` 对 DYNAMIC 空白规则报 DSL_PARSE_ERROR（防"无 WHERE=租户全量"）；同值改绑保留原快照。
 
 - **Ontology 流程图未注册动作调用无痕丢失**：LLM 幻觉动作名（如 `updateCampaignCooldown`，不在 ActionRegistry）经 parseAction 解析成功后被计入 `engine→tool:applyAction` 路由计数、却因无动作节点映射而不生成节点/边，30 天窗口内 9 次调用在图上完全不可见（且 `engine→applyAction` 66 与各 action 边合计 57 不守恒）。修复：聚合循环对解析出的动作/函数名校验注册集（`actionToObject`/`functionToObject`），未注册名直接跳过双累计——路由边计数与 Action/Function 边合计恒等（57==57、59==59），幻觉调用（执行必失败、图上无拓扑）不再污染图数据。
 
