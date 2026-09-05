@@ -268,6 +268,8 @@ public class AgentStatsService {
         Map<String, ToolAgg> toolAggs = new LinkedHashMap<>();
         Map<String, ToolAgg> actionAggs = new LinkedHashMap<>();
         Map<String, ToolAgg> functionAggs = new LinkedHashMap<>();
+        // 知识库检索步骤（引擎注入前 recordKb 落库，seq=1；独立维度，不入工具泳道）
+        Map<String, ToolAgg> kbAggs = new LinkedHashMap<>();
         for (AgentRunEntity r : runs) {
             List<Map<String, Object>> tcs = r.getToolCalls();
             if (tcs == null) {
@@ -291,9 +293,18 @@ public class AgentStatsService {
                     }
                     accumulate(toolAggs.computeIfAbsent(name, ToolAgg::new), tc);
                     accumulate(functionAggs.computeIfAbsent(fnName, ToolAgg::new), tc);
+                } else if ("knowledge_search".equals(name)) {
+                    accumulate(kbAggs.computeIfAbsent("kb", ToolAgg::new), tc);
                 } else {
                     accumulate(toolAggs.computeIfAbsent(name, ToolAgg::new), tc);
                 }
+            }
+        }
+        // 运行时工具节点：MCP（mcp_*）、Skill 加载工具与 skill 内工具等非静态工具调用过才出现（计数守恒）
+        List<String> renderTools = new ArrayList<>(tools);
+        for (String n : toolAggs.keySet()) {
+            if (!tools.contains(n)) {
+                renderTools.add(n);
             }
         }
 
@@ -301,12 +312,16 @@ public class AgentStatsService {
         List<Map<String, Object>> nodes = new ArrayList<>();
         nodes.add(Map.of("id", "engine", "type", "engine", "label", "Agent 引擎",
                 "calls", runs.size(), "avg_ms", 0, "fails", 0));
-        for (String t : tools) {
+        for (String t : renderTools) {
             ToolAgg a = toolAggs.get(t);
             nodes.add(a == null ? Map.of("id", "tool:" + t, "type", "tool", "label", t)
                     : Map.of("id", "tool:" + t, "type", "tool", "label", t,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
+        ToolAgg kbA = kbAggs.get("kb");
+        nodes.add(kbA == null ? Map.of("id", "kb", "type", "kb", "label", "知识库")
+                : Map.of("id", "kb", "type", "kb", "label", "知识库",
+                "calls", kbA.calls, "avg_ms", kbA.calls == 0 ? 0 : round0(kbA.msSum / (double) kbA.calls), "fails", kbA.fails));
         for (String act : actionToObject.keySet()) {
             ToolAgg a = actionAggs.get(act);
             nodes.add(a == null ? Map.of("id", "action:" + act, "type", "action", "label", act)
@@ -333,13 +348,18 @@ public class AgentStatsService {
 
         // 边
         List<Map<String, Object>> edges = new ArrayList<>();
-        for (String t : tools) {
+        for (String t : renderTools) {
             ToolAgg a = toolAggs.get(t);
             edges.add(a == null
                     ? Map.of("from", "engine", "to", "tool:" + t)
                     : Map.of("from", "engine", "to", "tool:" + t,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
+        ToolAgg kbE = kbAggs.get("kb");
+        edges.add(kbE == null
+                ? Map.of("from", "engine", "to", "kb")
+                : Map.of("from", "engine", "to", "kb",
+                "calls", kbE.calls, "avg_ms", kbE.calls == 0 ? 0 : round0(kbE.msSum / (double) kbE.calls), "fails", kbE.fails));
         for (String act : actionToObject.keySet()) {
             ToolAgg a = actionAggs.get(act);
             edges.add(a == null

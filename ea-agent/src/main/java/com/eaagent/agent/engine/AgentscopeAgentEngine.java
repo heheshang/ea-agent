@@ -162,7 +162,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
      * sysPrompt 不会随轮次刷新。
      * 无历史/无命中时对应消息不拼——行为退化为现状（零回归）。
      */
-    private MemoryPack withSessionMemory(RunContext rc, String userInput) {
+    private MemoryPack withSessionMemory(RunContext rc, String userInput, RunStatsMiddleware statsMw) {
         List<AgentRunEntity> history = runMapper.selectList(new QueryWrapper<AgentRunEntity>()
                 .select(AgentRunEntity.COL_ID, AgentRunEntity.COL_GOAL, AgentRunEntity.COL_STATUS, AgentRunEntity.COL_SUMMARY)
                 .eq(AgentRunEntity.COL_TENANT_ID, rc.tenantId())
@@ -193,9 +193,15 @@ public class AgentscopeAgentEngine implements AgentEngine {
             sb.append("当前请求可能是这些历史的延续、追问或修正，也可能无关；无关时请忽略回顾，只处理当前请求。");
             messages.add(new UserMessage(sb.toString()));
         }
-        // 知识库检索注入（RAG）：同一确定性打分（KnowledgeBaseService），无命中不注入（零回归）
+        // 知识库检索注入（RAG）：同一确定性打分（KnowledgeBaseService），无命中不注入（零回归）；
+        // 检索本身作为调用链首步（seq=1）经 middleware 实时落库（运行中链路含知识库检索维度）
         int kbHits = 0;
+        long kbStart = System.nanoTime();
         List<KnowledgeEntity> kb = knowledgeService.search(rc.tenantId(), userInput);
+        long kbMs = (System.nanoTime() - kbStart) / 1_000_000L;
+        if (statsMw != null) {
+            statsMw.recordKb(userInput, kb.size(), kbMs);
+        }
         if (!kb.isEmpty()) {
             StringBuilder sb = new StringBuilder(
                     "【知识库】以下是系统检索到与本次请求相关度最高的知识库条目（按相关度排序；如无关请忽略，与实时查询结果冲突时以实时查询结果为准）：\n");
@@ -263,9 +269,13 @@ public class AgentscopeAgentEngine implements AgentEngine {
         AtomicReference<String> finalReply = new AtomicReference<>();
         Map<String, StringBuilder> toolResults = new HashMap<>();
         Map<String, StringBuilder> toolArgs = new HashMap<>();
-        MemoryPack pack = withSessionMemory(rc, userInput);
         if (statsMw != null) {
-            statsMw.begin(pack.reviewCount(), pack.kbHits(), rc.tenantId(), Long.valueOf(rc.runId()));
+            // 先绑定租户/run 上下文，知识库检索（withSessionMemory）完成后 recordKb 实时落库首步
+            statsMw.begin(rc.tenantId(), Long.valueOf(rc.runId()));
+        }
+        MemoryPack pack = withSessionMemory(rc, userInput, statsMw);
+        if (statsMw != null) {
+            statsMw.setCounts(pack.reviewCount(), pack.kbHits());
         }
         log.info("stream start runId={} sessionId={} model={} memoryReview={} kbHits={}",
                 rc.runId(), rc.sessionId(), model, pack.reviewCount(), pack.kbHits());

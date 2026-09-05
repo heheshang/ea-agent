@@ -5,6 +5,7 @@ import com.eaagent.ontology.model.AgentToolCallEntity;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -70,5 +71,41 @@ class RunStatsMiddlewareTest {
                 tc(null, "some_tool", null, "params", "n/a", true, null));
         assertNull(e.getSeq());
         assertNull(e.getDurationMs());
+    }
+
+    @Test
+    void recordKbBecomesFirstStepAndClearsAfterDrain() {
+        RunStatsMiddleware mw = new RunStatsMiddleware("m", "s", null);
+        mw.begin(7, 42);
+        mw.recordKb("查退货款规则", 3, 15);
+        List<Map<String, Object>> out = mw.drainToolCalls();
+        assertEquals(1, out.size());
+        Map<String, Object> kb = out.get(0);
+        assertEquals(1, kb.get("seq"));
+        assertEquals("knowledge_search", kb.get("name"));
+        assertEquals(true, kb.get("ok"));
+        assertNull(kb.get("error"));
+        assertEquals(15L, kb.get("duration_ms"));
+        // 取走即清空，本轮 kb 步骤不残留到下一轮
+        assertTrue(mw.drainToolCalls().isEmpty());
+    }
+
+    @Test
+    void recordKbNoHitKeepsStepWithOkFalse() {
+        RunStatsMiddleware mw = new RunStatsMiddleware("m", "s", null);
+        mw.begin(7, 42);
+        mw.recordKb("无匹配的疑问", 0, 3);
+        Map<String, Object> kb = mw.drainToolCalls().get(0);
+        assertEquals(false, kb.get("ok"));
+        assertEquals("no_hit", kb.get("error"));
+    }
+
+    @Test
+    void kbRowMapsToKbKindEntity() {
+        AgentToolCallEntity e = RunStatsMiddleware.toEntity(7, 42,
+                tc(1, "knowledge_search", null, "goal", 12, true, null));
+        assertEquals("kb", e.getKind());
+        assertEquals(1, e.getSeq());
+        assertEquals("knowledge_search", e.getName());
     }
 }

@@ -61,6 +61,8 @@ public class RunStatsMiddleware implements MiddlewareBase {
     private int reviewCount = 0;
     /** 当前 run 的知识库注入条数（引擎 begin 时写入，落 prompt_info）。 */
     private int kbHits = 0;
+    /** 知识库检索步骤（run 首步 seq=1；unmatched 未命中时也保留步骤，ok=false）。 */
+    private Map<String, Object> kbRow;
 
     // onActing 计时/匹配表：以 toolCallId 关联 Start 与 End
     private final Map<String, Long> actingStartNanos = new HashMap<>();
@@ -72,17 +74,51 @@ public class RunStatsMiddleware implements MiddlewareBase {
         this.toolCallMapper = toolCallMapper;
     }
 
-    /** 新一轮开始：清空上一轮累积（串行执行，否则同 session 并发会串数据）。 */
-    public void begin(int reviewCount, int kbHits, long tenantId, long runId) {
+    /**
+     * 新一轮开始：绑定租户/run 上下文并清空上一轮累积（串行执行，否则同 session 并发会串数据）。
+     * 引擎在知识库检索（withSessionMemory）之前调用，随后 {@link #recordKb} 记录检索步骤（seq=1），
+     * 检索完成后 {@link #setCounts} 落 review/kb 计数（prompt_info）。
+     */
+    public void begin(long tenantId, long runId) {
         this.tenantId = tenantId;
         this.runId = runId;
-        this.reviewCount = reviewCount;
-        this.kbHits = kbHits;
+        reviewCount = 0;
+        kbHits = 0;
         toolSeq = 0;
+        kbRow = null;
         usages.clear();
         toolCalls.clear();
         actingStartNanos.clear();
         actingCalls.clear();
+    }
+
+    /** 会话回顾 / 知识库注入计数（withSessionMemory 完成后写入，落 prompt_info）。 */
+    public void setCounts(int reviewCount, int kbHits) {
+        this.reviewCount = reviewCount;
+        this.kbHits = kbHits;
+    }
+
+    /**
+     * 知识库检索步骤（引擎上下文装配时调用）：作为调用链首步（seq=1）记录并实时落库，
+     * 未命中（hits=0）时也保留步骤（ok=false，error=no_hit）——链路完整性；
+     * 后续工具调用序号顺延（首个工具 seq=2）。
+     */
+    public void recordKb(String query, int hits, long durationMs) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("name", "knowledge_search");
+        m.put("params", truncate(query, PARAMS_LIMIT));
+        m.put("duration_ms", durationMs);
+        m.put("ok", hits > 0);
+        m.put("error", hits > 0 ? null : "no_hit");
+        m.put("seq", 1);
+        m.put("target", null);
+        kbRow = m;
+        toolSeq = 1;
+        try {
+            toolCallMapper.insert(toEntity(tenantId, runId, m));
+        } catch (Exception ex) {
+            log.warn("live kb persist failed session={}: {}", sessionId, ex.toString());
+        }
     }
 
     public int reviewCount() {
@@ -168,7 +204,10 @@ public class RunStatsMiddleware implements MiddlewareBase {
         tce.setTarget(target == null ? null : String.valueOf(target));
         String toolName = String.valueOf(tc.get("name"));
         tce.setName(toolName);
-        if (target != null) {
+        if ("knowledge_search".equals(toolName)) {
+            // 知识库检索步骤（引擎注入前）：独立 kind，不入工具泳道
+            tce.setKind("kb");
+        } else if (target != null) {
             tce.setKind("applyAction".equals(toolName) ? "action" : "function");
         } else {
             tce.setKind("tool");
@@ -208,9 +247,13 @@ public class RunStatsMiddleware implements MiddlewareBase {
         return m;
     }
 
-    /** 取走当前 run 的工具调用明细。 */
+    /** 取走当前 run 的调用链明细（知识库检索步骤排首，随后为工具调用）。 */
     public List<Map<String, Object>> drainToolCalls() {
         List<Map<String, Object>> out = new ArrayList<>(toolCalls);
+        if (kbRow != null) {
+            out.add(0, kbRow);
+        }
+        kbRow = null;
         toolCalls.clear();
         return out;
     }

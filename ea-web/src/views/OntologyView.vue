@@ -4,14 +4,15 @@ import { useRouter } from 'vue-router'
 import { get } from '../api/http'
 
 /**
- * Ontology 调用链路页：流程图（引擎 → 工具 → Action/Function 分支 → 对象）+ 运行时调用热点。
- * 节点/边为代码事实（TypeRegistry 7 对象 / ActionRegistry 6 Action / FunctionRegistry 5 Function / AgentToolRegistry 7 工具），
+ * Ontology 调用链路页：流程图（引擎 → 知识库 / 工具 → Action/Function 分支 → 对象）+ 运行时调用热点。
+ * 节点/边为代码事实（TypeRegistry 7 对象 / ActionRegistry 6 Action / FunctionRegistry 5 Function / AgentToolRegistry 7 工具 +
+ * 知识库检索节点），MCP 工具与 Skill 加载/技能工具调用过才动态出现（运行时工具节点，计数守恒）；
  * 运行时统计来自 agent_run.tool_calls（calls / avg_ms / fails 徽章）。
  * 未调用过的节点与静态边置灰虚线展示——图同时是「Ontology 架构图」与「调用热点图」。
  */
 interface OntologyNode {
   id: string
-  type: 'engine' | 'tool' | 'action' | 'function' | 'object'
+  type: 'engine' | 'kb' | 'tool' | 'action' | 'function' | 'object'
   label: string
   calls?: number
   avg_ms?: number
@@ -67,10 +68,10 @@ interface FlowEdge {
   lx: number
   ly: number
 }
-const FLOW_KINDS: OntologyNode['type'][] = ['engine', 'tool', 'action', 'function', 'object']
-const COL_W: Record<OntologyNode['type'], number> = { engine: 120, tool: 198, action: 198, function: 198, object: 200 }
-const BOX_W: Record<OntologyNode['type'], number> = { engine: 112, tool: 190, action: 190, function: 190, object: 186 }
-const BOX_H: Record<OntologyNode['type'], number> = { engine: 44, tool: 54, action: 54, function: 54, object: 62 }
+const FLOW_KINDS: OntologyNode['type'][] = ['engine', 'kb', 'tool', 'action', 'function', 'object']
+const COL_W: Record<OntologyNode['type'], number> = { engine: 120, kb: 160, tool: 198, action: 198, function: 198, object: 200 }
+const BOX_W: Record<OntologyNode['type'], number> = { engine: 112, kb: 150, tool: 190, action: 190, function: 190, object: 186 }
+const BOX_H: Record<OntologyNode['type'], number> = { engine: 44, kb: 54, tool: 54, action: 54, function: 54, object: 62 }
 const ROW_H = 78
 const PAD_T = 44
 
@@ -82,7 +83,7 @@ const flow = computed(() => {
     x += COL_W[k] + 30
   }
   // 节点 div 实际渲染高度（端口均布以可见盒为准，避免多出端口溢出盒下沿）
-  const PORT_H: Record<OntologyNode['type'], number> = { engine: 48, tool: 36, action: 36, function: 36, object: 56 }
+  const PORT_H: Record<OntologyNode['type'], number> = { engine: 48, kb: 36, tool: 36, action: 36, function: 36, object: 56 }
   const nodes: FlowNode[] = []
   const pos = new Map<string, { cx: number; cy: number; w: number; kind: OntologyNode['type']; y: number }>()
   let rows = 1
@@ -184,7 +185,7 @@ const flow = computed(() => {
   })
   const cols = FLOW_KINDS.map((k) => ({
     x: colX[k]!,
-    label: k === 'engine' ? '引擎' : k === 'tool' ? '工具' : k === 'action' ? 'Action' : k === 'function' ? 'Function' : '对象',
+    label: k === 'engine' ? '引擎' : k === 'kb' ? '知识库' : k === 'tool' ? '工具' : k === 'action' ? 'Action' : k === 'function' ? 'Function' : '对象',
   }))
   return { w: x - 30 + 24, h: PAD_T + rows * ROW_H + 24, nodes, edges, cols }
 })
@@ -296,6 +297,16 @@ const playing = ref(false)
 const speed = ref(1)
 let traceTimer: number | undefined
 
+/** 当前选中 run 的状态（run-trace 返回；用于区分运行中实时回放与存量无明细）。 */
+const runStatus = ref('')
+/** 运行中 run 的调用链轮询续载定时器（2s，终态/切换/卸载即停）。 */
+let pollTimer: number | undefined
+
+const RUNNING_STATUS = new Set(['PLANNING', 'EXECUTING', 'OBSERVING'])
+function isRunning(s: string): boolean {
+  return RUNNING_STATUS.has(s)
+}
+
 async function loadRuns() {
   runsLoading.value = true
   try {
@@ -323,27 +334,71 @@ async function onRunChange(id: number) {
   playing.value = false
   step.value = -1
   trace.value = []
+  runStatus.value = ''
+  stopPoll()
   if (!id) return
   try {
     const res = await get<{ run: RunItem; trace: TraceCall[] }>('/agent/stats/run-trace', { run_id: id })
+    runStatus.value = res?.run?.status ?? ''
     trace.value = res?.trace ?? []
-    if (!trace.value.length) return
+    if (!trace.value.length) {
+      // 运行中暂无已完成调用：轮询等待首批明细
+      if (isRunning(runStatus.value)) startPoll(id)
+      return
+    }
     step.value = 0
     playing.value = true
+    // 运行中已有部分调用：轮询续载增长（不打断播放）
+    if (isRunning(runStatus.value)) startPoll(id)
   } catch {
     trace.value = []
   }
 }
 
-/** 单步调用的节点 id 集合（工具 + 动作/函数目标） */
+/** 运行中 run 每 2s 续载调用链；明细首次出现即自动播放，终态/切换/出错即停。 */
+function startPoll(id: number) {
+  stopPoll()
+  pollTimer = window.setInterval(async () => {
+    if (runId.value !== id) {
+      stopPoll()
+      return
+    }
+    try {
+      const res = await get<{ run: RunItem; trace: TraceCall[] }>('/agent/stats/run-trace', { run_id: id })
+      runStatus.value = res?.run?.status ?? ''
+      const t = res?.trace ?? []
+      if (trace.value.length === 0 && t.length > 0) {
+        trace.value = t
+        step.value = 0
+        playing.value = true
+      } else {
+        trace.value = t
+      }
+      if (!isRunning(runStatus.value)) stopPoll()
+    } catch {
+      stopPoll()
+    }
+  }, 2000)
+}
+
+function stopPoll() {
+  if (pollTimer !== undefined) {
+    window.clearInterval(pollTimer)
+    pollTimer = undefined
+  }
+}
+
+/** 单步调用的节点 id 集合（知识库检索步 → 知识库节点；工具步 → 工具 + 动作/函数目标） */
 function stepNodes(c: TraceCall): string[] {
+  if (c.kind === 'kb') return ['kb']
   const ids = [`tool:${c.name}`]
   if (c.target) ids.push(`${c.kind}:${c.target}`)
   return ids
 }
 
-/** 单步调用的边（engine→tool、tool→action/function，动作/函数→对象静态边存在则一并点亮） */
+/** 单步调用的边（engine→kb / engine→tool、tool→action/function，动作/函数→对象静态边存在则一并点亮） */
 function stepEdges(c: TraceCall): [string, string][] {
+  if (c.kind === 'kb') return [['engine', 'kb']]
   const es: [string, string][] = [['engine', `tool:${c.name}`]]
   if (c.target) {
     const t = `${c.kind}:${c.target}`
@@ -410,6 +465,7 @@ watch([playing, speed], ([p]) => {
 })
 
 onBeforeUnmount(() => {
+  stopPoll()
   if (traceTimer !== undefined) window.clearInterval(traceTimer)
 })
 
@@ -465,7 +521,7 @@ onMounted(() => {
         <span v-if="trace.length" class="step-text">
           第 {{ step < 0 ? 0 : Math.min(step + 1, trace.length) }} / {{ trace.length }} 步
           <template v-if="step >= 0 && step < trace.length">
-            · <b>{{ trace[step].name }}</b><template v-if="trace[step].target"> → {{ trace[step].target }}</template>
+            · <b>{{ trace[step].kind === 'kb' ? '知识库检索' : trace[step].name }}</b><template v-if="trace[step].target"> → {{ trace[step].target }}</template>
             <span class="step-ms">{{ trace[step].duration_ms ?? '-' }}ms</span>
             <span v-if="trace[step].ok === false" class="step-fail">✗ 失败</span>
           </template>
@@ -475,7 +531,10 @@ onMounted(() => {
           <el-radio-button :value="2">×2</el-radio-button>
           <el-radio-button :value="4">×4</el-radio-button>
         </el-radio-group>
-        <span v-if="!trace.length && runId" class="trace-empty">该 run 无工具调用明细（V5 迁移前的存量 run）</span>
+        <span v-if="!trace.length && runId" class="trace-empty">
+          {{ isRunning(runStatus) ? '该 run 执行中：调用链实时更新，完成后可完整回放…' : '该 run 无工具调用明细（V5 迁移前的存量 run）' }}
+        </span>
+        <span v-if="trace.length && isRunning(runStatus)" class="step-live">执行中 · 实时更新</span>
       </div>
     </el-card>
 
@@ -708,6 +767,7 @@ onMounted(() => {
   color: #1d2129;
   padding: 14px 16px;
 }
+.node.kb { background: #fffbe6; border-color: #d4a106; font-weight: 700; color: #874d00; }
 .node.tool { background: #e8ffea; border-color: #00b42a; }
 .node.action { background: #fff3e8; border-color: #ff7d00; }
 .node.function { background: #e6fffb; border-color: #13c2c2; }
@@ -807,6 +867,11 @@ onMounted(() => {
 .trace-empty {
   font-size: 12px;
   color: #86909c;
+}
+.step-live {
+  font-size: 12px;
+  color: #d46b08;
+  margin-left: 8px;
 }
 
 .overview-card {
