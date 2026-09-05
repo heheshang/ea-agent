@@ -68,6 +68,8 @@ docker compose up -d --build
 | Redis | localhost:6380 | 事件流 / 缓存 |
 
 > 环境变量覆盖：`DB_URL / DB_USER / DB_PASS / REDIS_URL / MODEL_NAME / MODEL_API_KEY / MODEL_BASE_URL`；种子数据由 `EA_SEED=true` 开启（幂等，已有 demo 租户则跳过）。
+>
+> **本地运行（IDEA / `mvn spring-boot:run`，从仓库根目录启动）**：应用启动时自动加载仓库根目录 `.env`（`spring.config.import: optional:file:.env`）。模型配置优先级：`MODEL_*`（compose 注入）→ `EA_LLM_*`（本地 .env）→ 空（自动降级 MockAgentEngine）。容器内无 .env 文件，仍由 docker-compose 注入，行为不变。
 
 ### 演示账号（种子数据）
 

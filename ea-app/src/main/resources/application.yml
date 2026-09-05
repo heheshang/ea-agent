@@ -4,6 +4,9 @@ server:
 spring:
   application:
     name: ea-agent
+  # 本地运行从仓库根目录启动时自动加载 .env（EA_LLM_* 等）；容器内无 .env，optional 静默跳过
+  config:
+    import: optional:file:.env[.properties]
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5433/eaagent?stringtype=unspecified}
     username: ${DB_USER:eaagent}
@@ -58,7 +61,6 @@ ea:
     approval-timeout-ms: 600000
     max-tool-rounds: 20
     summary-threshold-rounds: 20
-    workspace-dir: .agentscope/workspace
   security:
     jwt-secret: ${JWT_SECRET:ea-dev-jwt-secret-change-me-please-32bytes!}
     jwt-access-ttl-ms: 7200000
@@ -71,9 +73,11 @@ ea:
   channels:
     console-enabled: ${EA_CHANNEL_CONSOLE:true}
   agentscope:
-    model: ${MODEL_NAME:}
-    api-key: ${MODEL_API_KEY:}
-    base-url: ${MODEL_BASE_URL:}
+    # 优先级：容器/compose 注入的 MODEL_* → 本地 .env 的 EA_LLM_* → 空（MockAgentEngine 降级）。
+    # 注意：Spring 占位符分隔符是单个冒号（${A:default}），不是 bash 的 :-（会导致值带前导 -）
+    model: ${MODEL_NAME:${EA_LLM_MODEL_ID:}}
+    api-key: ${MODEL_API_KEY:${EA_LLM_API_KEY:}}
+    base-url: ${MODEL_BASE_URL:${EA_LLM_BASE_URL:}}
     workspace-dir: ${AGENT_WORKSPACE:.agentscope/workspace}
   seed:
     enabled: ${EA_SEED:true}

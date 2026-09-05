@@ -6,6 +6,8 @@
 
 ### Added
 
+- **本地启动 .env 自动加载**：应用启动时经 `spring.config.import: optional:file:.env[.properties]` 读取仓库根目录 `.env`；agentscope 模型配置支持 `EA_LLM_*` 回退（优先级 `MODEL_*` → `EA_LLM_*` → 空降级 MockAgentEngine；Spring 占位符用单冒号 `${A:default}` 嵌套）。修复本地 IDEA 运行时（此前 `MODEL_*` 环境变量缺失，日志 `run execute complete durationMs≈1070` 即 MockAgentEngine 固定 5×200ms 延迟，无真实 LLM 调用）。容器路径不变（无 .env、compose 注入优先）。工作区键对齐：引擎改读 `ea.agentscope.workspace-dir`（`AGENT_WORKSPACE` 生效），删除失效的 `ea.agent.workspace-dir`。
+
 - **邮件通道 mock 闭环**：mock-gw 新增 `/email/send`、`/email/receipt`（与短信同范式：X-Api-Key 校验、`mock-email-*` message_id、2s 后回调 DELIVERED 至 `/api/channels/email/callback`）；`EmailChannelAdapter` 由 console 降级升级为配置驱动 HTTP 发送（channel_config 配置存在即走 mock 网关，未配置仍 console 降级兜底）；seed 幂等落库 email 通道配置（endpoint=mock-gw）
 - **Call Function 三件套补齐**：`FunctionRegistry`（与 `ActionRegistry` 对称的只读咨询函数注册表）+ 单一 `callFunction` 工具路由——audienceStats / frequencyCheck / channelPreference 收编为注册函数；churnRiskScore 升级为流失预测模型 v1（近 30 天事件衰减 + 非 ACTIVE 状态加成，`model` 版本字段预留 ML 替换）；新增 bestSendTime 最优发送时段优化算法 v1（近 30 天事件 / 成功触达时段分布加权 + 23-06 安静窗口回避 + 无信号回退 10-11 时）
 - **Agent 工具收敛**：10 工具 → 7 工具（5 查询 + applyAction + callFunction），引擎系统提示词 v4 同步约束
@@ -14,6 +16,8 @@
 - **触发规则参数优化**：campaign `trigger_rule` 的 cooldown/window 保存时支持宽松格式（`1h`/`30m`/`2d`/`90s`/纯数字秒/ISO-8601）并归一为 ISO-8601 落库（对齐详细设计 8.4 契约 `{"event_type","window":"1d","cooldown":"1h"}`）；非法格式保存即返回 E-13002 明确报错（此前保存成功、触发时 `Duration.parse` 500/DLQ）；event_type trim 并限长 64；创建/更新两路径统一接入，发送侧宽松解析兜底存量脏值；前端触发规则表单占位示例同步
 
 ### Fixed
+
+- **agentscope 2.0.1 弃用 API 迁移**：`Agent.stream(List<Msg>, StreamOptions)` 已标注 `@Deprecated(since="2.0.0", forRemoval=true)`，引擎迁移至 v2 `HarnessAgent.streamEvents(List<Msg>, RuntimeContext)` → `Flux<AgentEvent>`（RuntimeContext 显式携带 sessionId，保持 v1 `defaultSessionId` 的会话隔离语义）。SSE 契约逐字节不变：`ThinkingBlockDeltaEvent`→`thinking_delta`、`TextBlockDeltaEvent`→`text_delta`、`ToolResultTextDeltaEvent`/`ToolResultEndEvent` 按 toolCallId 聚合→`action_result`（并发多工具各自独立）、`done`/`error` 仍由 AgentService 补齐；摘要改从 `AgentResultEvent` 取最终回复纯文本（不再依赖增量拼接，且不含思考/工具块）。
 
 - **Agent 工具参数契约**：applyAction 描述改为按 ActionRegistry 动态枚举各动作的必需字段（此前仅文案描述，LLM 猜参数名导致反复失败：sendTouch 只缺 `campaign_id` 却传 `tenant_id`/驼峰键）；args 键名驼峰自动归一为下划线（`campaignId` → `campaign_id`）。
 

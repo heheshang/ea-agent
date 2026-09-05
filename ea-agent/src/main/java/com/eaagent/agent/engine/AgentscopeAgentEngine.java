@@ -6,14 +6,16 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
-import io.agentscope.core.agent.Event;
-import io.agentscope.core.agent.EventType;
-import io.agentscope.core.agent.StreamOptions;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.AgentResultEvent;
+import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.event.ThinkingBlockDeltaEvent;
+import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
-import io.agentscope.core.message.ThinkingBlock;
-import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelCreationContext;
@@ -31,18 +33,21 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * agentscope 引擎（4.1 主线）：HarnessAgent + 租户工具集。
- * 条件：ea.agentscope.model 配置时生效；按 sessionId 缓存 agent（defaultSessionId 会话隔离）。
- * 事件映射：REASONING→thinking_delta、TOOL_RESULT→action_result、其余→text_delta、结尾补 done。
+ * 条件：ea.agentscope.model 配置时生效；按 sessionId 缓存 agent（RuntimeContext 显式会话隔离）。
+ * 事件映射（v2 AgentEvent 流）：ThinkingBlockDelta→thinking_delta、TextBlockDelta→text_delta、
+ * 工具结果按 toolCallId 聚合→action_result、AgentResult→落库摘要；done 由 AgentService 补齐。
  */
 @Component
 @ConditionalOnExpression("T(org.springframework.util.StringUtils).hasText('${ea.agentscope.model:}')")
@@ -85,7 +90,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
             @Value("${ea.agentscope.model}") String model,
             @Value("${ea.agentscope.api-key:}") String apiKey,
             @Value("${ea.agentscope.base-url:}") String baseUrl,
-            @Value("${ea.agentscope.workspace:ea-agent/workspace}") String workspace,
+            @Value("${ea.agentscope.workspace-dir:.agentscope/workspace}") String workspace,
             @Value("${ea.agentscope.pricing.input:0.00000014}") double inputPrice,
             @Value("${ea.agentscope.pricing.output:0.00000028}") double outputPrice,
             @Value("${ea.agentscope.pricing.cached:0.0000000028}") double cachedPrice,
@@ -189,36 +194,26 @@ public class AgentscopeAgentEngine implements AgentEngine {
                     .build();
         });
         RunStatsMiddleware statsMw = statses.get(rc.sessionId());
-        AtomicReference<StringBuilder> reply = new AtomicReference<>(new StringBuilder());
+        AtomicReference<String> finalReply = new AtomicReference<>();
+        Map<String, StringBuilder> toolResults = new HashMap<>();
         MemoryPack pack = withSessionMemory(rc, userInput);
         if (statsMw != null) {
             statsMw.begin(pack.reviewCount());
         }
         log.info("stream start runId={} sessionId={} model={} memoryReview={}",
                 rc.runId(), rc.sessionId(), model, pack.reviewCount());
-        return a.stream(pack.messages(),
-                        StreamOptions.builder()
-                                .incremental(true)
-                                .includeReasoningChunk(true)
-                                .includeSummaryResult(true)
-                                .build())
-                .map(ev -> {
-                    EngineEvent e = mapEvent(ev);
-                    // 累积模型最终回复：EngineEvent text_delta（SSE 实证最终回复为 1 个全文事件；
-                    // thinking→thinking_delta、工具→action_result 不参与，error 亦不参与）
-                    if ("text_delta".equals(e.type())) {
-                        String t = renderText(ev.getMessage());
-                        if (t != null && !t.isBlank()) {
-                            reply.get().append(t);
-                        }
-                    }
-                    return e;
-                })
+        // v2 流式 API：streamEvents → Flux<AgentEvent>（Delta 原生，无需 StreamOptions 开关）；
+        // RuntimeContext 显式携带 sessionId，语义同 v1 defaultSessionId 会话隔离
+        return a.streamEvents(pack.messages(),
+                        RuntimeContext.builder().sessionId(rc.sessionId()).build())
+                .flatMap(ev -> Mono.justOrEmpty(mapAgentEvent(ev, toolResults, finalReply)))
                 .doOnComplete(() -> {
-                    persistSummary(rc, reply.get());
+                    persistSummary(rc, new StringBuilder(finalReply.get() == null ? "" : finalReply.get()));
                     persistStats(rc, userInput, statsMw);
                     log.info("stream complete runId={} sessionId={} replyLen={} statsPersisted={}",
-                            rc.runId(), rc.sessionId(), reply.get().length(), statsMw != null);
+                            rc.runId(), rc.sessionId(),
+                            finalReply.get() == null ? 0 : finalReply.get().length(),
+                            statsMw != null);
                 })
                 .onErrorResume(e -> {
                     log.warn("agentscope stream failed runId={}: {}", rc.runId(), e.toString());
@@ -284,43 +279,50 @@ public class AgentscopeAgentEngine implements AgentEngine {
         runMapper.update(null, uw);
     }
 
-    private static EngineEvent mapEvent(Event e) {
-        EventType t = e.getType();
-        String text = renderText(e.getMessage());
-        return switch (t) {
-            case REASONING -> new EngineEvent("thinking_delta", "{\"text\":" + jsonQuote(text) + "}");
-            case TOOL_RESULT -> new EngineEvent("action_result",
-                    "{\"tool\":" + (toolNameOf(e.getMessage()) == null ? "null" : jsonQuote(toolNameOf(e.getMessage())))
-                            + ",\"result\":" + jsonQuote(text) + "}");
-            default -> new EngineEvent("text_delta", "{\"text\":" + jsonQuote(text) + "}");
-        };
-    }
-
-    /** 提取消息中首个非空工具名（action_result 事件携带，前端展示"工具结果 · 工具名"）。 */
-    private static String toolNameOf(Msg msg) {
-        for (ContentBlock b : msg.getContent()) {
-            if (b instanceof ToolResultBlock tr && tr.getName() != null && !tr.getName().isBlank()) {
-                return tr.getName();
-            }
+    /**
+     * v2 AgentEvent → EngineEvent 映射（保持 SSE 契约不变）：
+     * <ul>
+     *   <li>ThinkingBlockDelta → thinking_delta（思考增量，原 REASONING）</li>
+     *   <li>TextBlockDelta → text_delta（文本增量，原默认分支）</li>
+     *   <li>ToolResultTextDelta → 按 toolCallId 聚合到 toolResults（并发工具各自独立）</li>
+     *   <li>ToolResultEnd → action_result（结果文本 + 工具名，原 TOOL_RESULT）</li>
+     *   <li>AgentResult → 缓存最终回复全文（摘要落库，确保完整文本不依赖增量拼接）</li>
+     *   <li>其余事件（start/end/模型调用等）不产生 SSE，返回 null 由上游过滤</li>
+     * </ul>
+     */
+    private static EngineEvent mapAgentEvent(AgentEvent ev,
+            Map<String, StringBuilder> toolResults, AtomicReference<String> finalReply) {
+        if (ev instanceof ThinkingBlockDeltaEvent t) {
+            return new EngineEvent("thinking_delta", "{\"text\":" + jsonQuote(t.getDelta()) + "}");
+        }
+        if (ev instanceof TextBlockDeltaEvent t) {
+            return new EngineEvent("text_delta", "{\"text\":" + jsonQuote(t.getDelta()) + "}");
+        }
+        if (ev instanceof ToolResultTextDeltaEvent t) {
+            toolResults.computeIfAbsent(t.getToolCallId(), k -> new StringBuilder())
+                    .append(t.getDelta());
+            return null;
+        }
+        if (ev instanceof ToolResultEndEvent t) {
+            StringBuilder sb = toolResults.remove(t.getToolCallId());
+            String result = sb == null ? "" : sb.toString();
+            return new EngineEvent("action_result",
+                    "{\"tool\":" + jsonQuote(t.getToolCallName())
+                            + ",\"result\":" + jsonQuote(result) + "}");
+        }
+        if (ev instanceof AgentResultEvent r && r.getResult() != null) {
+            finalReply.set(renderFinalText(r.getResult()));
+            return null;
         }
         return null;
     }
 
-    private static String renderText(Msg msg) {
+    /** 最终回复纯文本（摘要落库；与 v1 includeSummaryResult 语义一致，不含思考/工具块）。 */
+    private static String renderFinalText(Msg msg) {
         StringBuilder sb = new StringBuilder();
         for (ContentBlock b : msg.getContent()) {
-            if (b instanceof TextBlock tb) {
+            if (b instanceof TextBlock tb && tb.getText() != null) {
                 sb.append(tb.getText());
-            } else if (b instanceof ThinkingBlock tk) {
-                sb.append(tk.getThinking());
-            } else if (b instanceof ToolResultBlock tr) {
-                for (ContentBlock ob : tr.getOutput()) {
-                    if (ob instanceof TextBlock otb) {
-                        sb.append(otb.getText());
-                    } else if (ob instanceof ThinkingBlock otk) {
-                        sb.append(otk.getThinking());
-                    }
-                }
             }
         }
         return sb.toString();
