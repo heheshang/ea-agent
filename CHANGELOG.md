@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- **Agent 对话触达租户上下文缺失（E-11001）**：`SmsChannelAdapter.validate` 此前经 `TenantContext.requiredTenantId()` 取租户（HTTP 请求线程 ThreadLocal）；Agent 对话中 `applyAction(sendTouch)` 执行于 agentscope 线程（无 TenantContext），短信通道校验必现「租户上下文缺失」，工具结果形如 `{"error":"租户上下文缺失"}`（日志 `action done ok=false`）。通道接口 `validate(Map)` 改为 `validate(Long tenantId, Map)`（与 `send(DeliveryMessage)` 同样显式传租户），`SendTouchAction` 传入 `ActionContext` 租户；Email/Console 适配器签名同步。事件/调度链路（显式重建 TenantContext）与 HTTP 路径行为不变。
+
 - **agentscope 2.0.1 弃用 API 迁移**：`Agent.stream(List<Msg>, StreamOptions)` 已标注 `@Deprecated(since="2.0.0", forRemoval=true)`，引擎迁移至 v2 `HarnessAgent.streamEvents(List<Msg>, RuntimeContext)` → `Flux<AgentEvent>`（RuntimeContext 显式携带 sessionId，保持 v1 `defaultSessionId` 的会话隔离语义）。SSE 契约逐字节不变：`ThinkingBlockDeltaEvent`→`thinking_delta`、`TextBlockDeltaEvent`→`text_delta`、`ToolResultTextDeltaEvent`/`ToolResultEndEvent` 按 toolCallId 聚合→`action_result`（并发多工具各自独立）、`done`/`error` 仍由 AgentService 补齐；摘要改从 `AgentResultEvent` 取最终回复纯文本（不再依赖增量拼接，且不含思考/工具块）。
 
 - **Agent 工具参数契约**：applyAction 描述改为按 ActionRegistry 动态枚举各动作的必需字段（此前仅文案描述，LLM 猜参数名导致反复失败：sendTouch 只缺 `campaign_id` 却传 `tenant_id`/驼峰键）；args 键名驼峰自动归一为下划线（`campaignId` → `campaign_id`）。

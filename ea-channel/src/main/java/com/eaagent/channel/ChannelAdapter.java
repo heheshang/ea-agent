@@ -11,8 +11,8 @@ public interface ChannelAdapter {
     /** 通道类型标识（与 campaign.channel / channel_config.channel 一致）。 */
     String channelType();
 
-    /** 校验通道配置（改配置/测试发送时调用）；无效抛 BizException E-14002。 */
-    void validate(Map<String, Object> config);
+    /** 校验通道配置（改配置/测试发送时调用）；无效抛 BizException E-14002。租户显式传入（异步线程无 TenantContext）。 */
+    void validate(Long tenantId, Map<String, Object> config);
 
     /** 发送：返回通道侧消息 ID（console 降级 = deliveryId）；失败抛 E-1400x。 */
     String send(DeliveryMessage message);

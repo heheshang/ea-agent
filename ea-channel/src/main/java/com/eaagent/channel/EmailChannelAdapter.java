@@ -76,7 +76,7 @@ public class EmailChannelAdapter implements ChannelAdapter {
     }
 
     @Override
-    public void validate(Map<String, Object> config) {
+    public void validate(Long tenantId, Map<String, Object> config) {
         // email 允许未配置：走 console 降级兜底（不抛 E-14001）
     }
 

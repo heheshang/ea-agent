@@ -105,7 +105,7 @@ public class SendTouchAction extends AbstractAction {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
         }
         ChannelAdapter adapter = channelRegistry.get(campaign.getChannel());
-        adapter.validate(Map.of());
+        adapter.validate(tenantId, Map.of());
 
         Duration cooldown = null;
         String cooldownRaw = req.getString("cooldown");

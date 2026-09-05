@@ -37,7 +37,7 @@ public class ConsoleChannelAdapter implements ChannelAdapter {
     }
 
     @Override
-    public void validate(Map<String, Object> config) {
+    public void validate(Long tenantId, Map<String, Object> config) {
         if (!consoleEnabled) {
             throw new BizException(ErrorCode.CHANNEL_NOT_CONFIGURED);
         }
@@ -45,7 +45,7 @@ public class ConsoleChannelAdapter implements ChannelAdapter {
 
     @Override
     public String send(DeliveryMessage message) {
-        validate(Map.of());
+        validate(message.tenantId(), Map.of());
         log.info("[CONSOLE_CHANNEL] deliveryId={} tenantId={} customerId={} channel={} to={} abGroup={} content={}",
                 message.deliveryId(), message.tenantId(), message.customerId(), message.channel(),
                 message.to(), message.abGroup(), message.templateContent());

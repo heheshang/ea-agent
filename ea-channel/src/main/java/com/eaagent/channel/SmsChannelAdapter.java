@@ -70,9 +70,9 @@ public class SmsChannelAdapter implements ChannelAdapter {
     }
 
     @Override
-    public void validate(Map<String, Object> config) {
-        // 调用方不传凭据：以 channel_config 落库配置为准
-        loadConfig(com.eaagent.common.TenantContext.requiredTenantId());
+    public void validate(Long tenantId, Map<String, Object> config) {
+        // 调用方不传凭据：以 channel_config 落库配置为准；租户由调用方显式传入（异步线程无 TenantContext）
+        loadConfig(tenantId);
     }
 
     @Override
