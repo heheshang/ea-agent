@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import threading
 import time
 import urllib.parse
@@ -27,6 +28,11 @@ CALLBACK_SECRET = os.environ.get("CALLBACK_SECRET", "sms-callback-secret-1")
 API_KEY = os.environ.get("SMS_API_KEY", "test-api-key")
 
 SENT = {}  # message_id -> status
+
+
+def new_msg_id(prefix: str) -> str:
+    """并发安全唯一 message_id：毫秒时间戳 + 随机后缀（并发 handler 同毫秒不撞车）。"""
+    return f"{prefix}-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
 
 
 def sign(message: str) -> str:
@@ -83,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[SMS-SEND] REJECT bad api key", flush=True)
                 self._send({"error": "invalid api key"}, 401)
                 return
-            msg_id = f"mock-sms-{int(time.time() * 1000)}"
+            msg_id = new_msg_id("mock-sms")
             SENT[msg_id] = "ACCEPTED"
             threading.Thread(target=fire_callback, args=(msg_id, "DELIVERED"), daemon=True).start()
             self._send({"message_id": msg_id, "status": "ACCEPTED"})
@@ -101,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[EMAIL-SEND] REJECT bad api key", flush=True)
                 self._send({"error": "invalid api key"}, 401)
                 return
-            msg_id = f"mock-email-{int(time.time() * 1000)}"
+            msg_id = new_msg_id("mock-email")
             SENT[msg_id] = "ACCEPTED"
             threading.Thread(target=fire_callback, args=(msg_id, "DELIVERED", EMAIL_CALLBACK_URL), daemon=True).start()
             self._send({"message_id": msg_id, "status": "ACCEPTED"})
