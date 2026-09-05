@@ -82,10 +82,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private static final int KNOWLEDGE_CONTENT_LIMIT = 500;
     /** 回顾中单条目标截断长度（防 token 膨胀）。 */
     private static final int MEMORY_GOAL_LIMIT = 150;
-    /** 回顾中单条结果摘要截断长度。 */
+    /** 会话回顾中单条结果摘要截断长度（仅注入侧截断；落库保留全文供聊天历史/审计展示）。 */
     private static final int MEMORY_SUMMARY_LIMIT = 200;
-    /** 落库摘要最大长度（完整回复截断，防 jsonb/token 膨胀）。 */
-    private static final int SUMMARY_STORE_LIMIT = 600;
     /** 系统提示词版本（统计维度 prompt_info.sys_prompt_version，改提示词结构时递增）。 */
     private static final String SYS_PROMPT_VERSION = "v9";
 
@@ -329,14 +327,13 @@ public class AgentscopeAgentEngine implements AgentEngine {
                 });
     }
 
-    /** 完成时截断最终回复落库 summary（会话记忆注入材料；空回复不写）。 */
+    /** 完成时将最终回复全文落库 summary（聊天历史/审计展示全文；会话记忆注入时另有 MEMORY_SUMMARY_LIMIT 截断，落库不截断）。 */
     private void persistSummary(RunContext rc, StringBuilder reply) {
         if (reply == null || reply.isEmpty()) {
             log.warn("persistSummary skipped runId={} reason=empty reply", rc.runId());
             return;
         }
         String s = reply.toString().trim();
-        s = Texts.truncate(s, SUMMARY_STORE_LIMIT);
         runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                 .eq(AgentRunEntity.COL_ID, Long.valueOf(rc.runId()))
                 .set(AgentRunEntity.COL_SUMMARY, s));

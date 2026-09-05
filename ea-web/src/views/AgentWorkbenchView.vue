@@ -234,7 +234,7 @@ async function loadSessionHistoryIntoMessages() {
   if (history.length) messages.value = renderHistory(history)
 }
 
-/** done 后：以最新 runs 重建消息 = 历史 + 本轮（本轮 assistant 用 summary 呈现；空则状态占位）。 */
+/** done 后：以最新 runs 重建消息 = 历史 + 本轮；本轮刚流式完成，保留完整 live 内容（思考/步骤/全文回复）不被 summary 摘要取代。 */
 async function rebuildFromHistory() {
   const history = await loadSessionHistory()
   if (!history.length) return
@@ -242,6 +242,9 @@ async function rebuildFromHistory() {
   const cur = history.find(r => r.id === runId.value)
   if (cur) {
     runStatus.value = cur.status
+    // 本轮是会话内最新 run（renderHistory 末条 assistant 即它）→ 用 live 完整块替换 summary 条目
+    const live = messages.value[messages.value.length - 1]
+    if (live?.role === 'assistant' && live.blocks.length) msgs[msgs.length - 1] = live
   } else if (runId.value != null) {
     // 本轮 run 不在当前会话历史（如回放其它会话）→ 保留刚流式生成的本轮消息
     const last = messages.value[messages.value.length - 1]

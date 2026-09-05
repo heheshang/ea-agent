@@ -34,6 +34,8 @@
 
 ### Changed
 
+- **聊天历史完整回复修复**：`agent_run.summary` 落库不再 600 字截断——完成时写入最终回复全文（`AgentscopeAgentEngine.persistSummary` 删除 `SUMMARY_STORE_LIMIT` 截断；会话记忆注入侧另有 `MEMORY_SUMMARY_LIMIT=200` 截断，prompt 体积受影响为零）。此前 summary 被前端聊天页当完整回复渲染（`rebuildFromHistory`/`renderHistory`），SSE 流式结束后长回复尾部（如多缺口清单的后几项）从聊天区消失；前端 `rebuildFromHistory` 对刚完成的本轮保留 live 流式完整内容，不再被摘要降级。存量 55 条已截断 summary 由 Redis 步骤 `text_delta` 拼接重建回填（只更新数据，不动迁移文件 checksum）。
+
 - **后端源码重构（SRP/OCP/DIP/DRY 收敛）**：常量去重至单一事实源——实体状态/审核/AB 模式常量落位 8 个实体类（`CampaignEntity.STATUS_*`、`DeliveryEntity.STATUS_*`、`TemplateEntity.REVIEW_*`、`AgentRunEntity.STATUS_*` 及 Customer/Tenant/TenantUser/Audience `STATUS_ACTIVE`），跨域共享值新增 `ea-common` 常量类（`Roles` 角色与权限级别矩阵、`Channels` 通道全集、`Actors` 系统/用户/Agent 身份），`AgentService.ST_*` 旧常量删除并全量改引（AgentRunWatchdog 与相关测试同步）；工具方法收敛至 `Texts`（`truncate`/`toSnake`/`toCamel`/`firstValue`）——7 处重复截断逻辑、RuleEngine/ObjectApiService/AgentToolRegistry 三份命名转换、3 处 applyAction/callFunction 入参解析全部委托单一实现（`RuleEngine.toSnake/toCamel` 保留 public static 签名、体内一行委托，测试兼容）；结构收拢——`ObjectApiService` 双 switch 合一（`mapperFor` 委托 `mapperForEntity`，行为逐 case 核对等价）、`EventConsumer.toDlq` 复用 `toStringKeyMap`（error 截断 500 无省略号不变量保留）。纯重构零行为变更（截断/解析语义逐一核对等价，日志与错误文案原样保留），全量测试 37 例通过。
 
 - **Ontology 流程图运行前全虚线、回放激活实线动效**：边线型由「静态数据驱动（有调用即实线）」改为「**回放状态驱动**」——运行前整图所有连线均为灰虚线（拓扑预览态，`engine→tool`/`tool→action·function`/`action·function→obj` 一律虚线，调用数标签与节点徽章保留）；回放每运行到一步，该步经过的节点间连线变为**红色实线**并叠加**流动光点动画**（`edge-line-flow` 亮条沿路径 `@keyframes trace-flow` 循环流动，实线本身为走通的路径），已走过的边保持实线（进度累积），⏮ 重置回到全虚线。节点置灰（无调用）与下钻逻辑不变；后端对象边 `calls/avg_ms/fails` 统计仍保留（标签、节点徽章、统计页数据源）。
