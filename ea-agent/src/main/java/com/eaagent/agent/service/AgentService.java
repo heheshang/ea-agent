@@ -1,5 +1,6 @@
 package com.eaagent.agent.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.eaagent.agent.engine.AgentEngine;
 import com.eaagent.agent.engine.RunContext;
@@ -53,6 +54,20 @@ public class AgentService {
         return "ea:run:" + runId + ":steps";
     }
 
+    /**
+     * 同会话在途 run（防重用）：NEW/PLANNING/EXECUTING/OBSERVING 视为执行链上未终结，
+     * 会话仍被占用；AWAITING_APPROVAL 等待人工审批不占用执行线程，放行新提交。
+     */
+    AgentRunEntity findInflightRun(Long tenantId, String sessionId) {
+        return runMapper.selectOne(new QueryWrapper<AgentRunEntity>()
+                .eq(AgentRunEntity.COL_TENANT_ID, tenantId)
+                .eq(AgentRunEntity.COL_SESSION_ID, sessionId)
+                .in(AgentRunEntity.COL_STATUS,
+                        ST_NEW, ST_PLANNING, ST_EXECUTING, ST_OBSERVING)
+                .orderByDesc(AgentRunEntity.COL_ID)
+                .last("LIMIT 1"));
+    }
+
     private AgentEngine engine() {
         return engines.stream().filter(AgentEngine::available).findFirst()
                 .orElseThrow(() -> new BizException(ErrorCode.LLM_CALL_FAILED));
@@ -60,6 +75,14 @@ public class AgentService {
 
     /** 建 run（POST /api/agent/chat）：NEW 落库，清扫历史步骤缓存。 */
     public AgentRunEntity startRun(Long tenantId, Long userId, String role, String goal, String sessionId) {
+        // 同会话防重（修复：挂起 run 占住会话时用户重复提交会生成重复 run——实证 116/117 同 goal 双 run；
+        // 拒绝让用户重发而非静默产生第二个在途 run；AWAITING_APPROVAL 等待人工审批不占用执行，放行）
+        AgentRunEntity inflight = findInflightRun(tenantId, sessionId);
+        if (inflight != null) {
+            log.warn("start rejected tenantId={} sessionId={} reason=E-15002 inflight runId={} status={}",
+                    tenantId, sessionId, inflight.getId(), inflight.getStatus());
+            throw new BizException(ErrorCode.STATE_NOT_ALLOWED);
+        }
         AgentRunEntity run = new AgentRunEntity();
         run.setTenantId(tenantId);
         run.setSessionId(sessionId);

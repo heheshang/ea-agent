@@ -61,6 +61,10 @@ ea:
     approval-timeout-ms: 600000
     max-tool-rounds: 20
     summary-threshold-rounds: 20
+    # 挂起 run 兜底回收：watchdog-ms 扫描周期；stale-run-ms = run 超过该时长无心跳（updated_at
+    # 不再推进）判定挂起 → NEW 标 CANCELLED、执行中状态标 FAILED（释放会话，避免用户只能重发）。
+    watchdog-ms: ${EA_AGENT_WATCHDOG_MS:60000}
+    stale-run-ms: ${EA_AGENT_STALE_RUN_MS:900000}
   security:
     jwt-secret: ${JWT_SECRET:ea-dev-jwt-secret-change-me-please-32bytes!}
     jwt-access-ttl-ms: 7200000
@@ -82,6 +86,13 @@ ea:
     # 技能目录（SKILL.md 技能文件，YAML frontmatter: name/description；harness 自动注入技能提示词
     # 与 load_skill_through_path 技能加载工具）。默认仓库内 agentscope-skills/，可经 EA_AGENTSCOPE_SKILLS_DIR 覆盖。
     skills-dir: ${EA_AGENTSCOPE_SKILLS_DIR:agentscope-skills}
+    # LLM HTTP 调用兜底（OpenAI 兼容 provider 经 GenerateOptions.ExecutionConfig 生效）：
+    # timeout-ms 覆盖单个模型调用的总时长（连接+流式响应）；不配时 agentscope 默认无限等待，
+    # 工具结果后的下一轮推理一旦无返回，run 会永久停在 EXECUTING。max-retries 为重试次数
+    # （0 = 不重试，超时/5xx 直接失败并释放 run；网络抖动频繁时可调大，注意重试会重复推送思考增量）。
+    http:
+      timeout-ms: ${EA_AGENTSCOPE_HTTP_TIMEOUT_MS:120000}
+      max-retries: ${EA_AGENTSCOPE_HTTP_MAX_RETRIES:0}
     # MCP（Model Context Protocol）外部工具接入（ADR-5）：
     #   name     必填，server 唯一标识（工具并入后按此注册）
     #   transport stdio | streamable-http | sse（默认 stdio）

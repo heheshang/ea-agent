@@ -26,6 +26,8 @@ import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelCreationContext;
 import io.agentscope.core.model.ModelRegistry;
+import io.agentscope.core.model.GenerateOptions;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.core.skill.repository.FileSystemSkillRepository;
@@ -43,6 +45,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -88,6 +91,10 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private final String apiKey;
     private final String baseUrl;
     private final String workspace;
+    /** LLM 单次调用超时（连接+流式响应总时长；0=不生效，保留 agentscope 无限等待默认）。 */
+    private final long llmTimeoutMs;
+    /** LLM 调用失败重试次数（0=不重试；超时/网络抖动时做一次重试兜底）。 */
+    private final int llmMaxRetries;
     /** 模型单价（美元/token，DeepSeek V4 Flash 参考：输入 $0.14/M、输出 $0.28/M、缓存命中 $0.0028/M，可经配置调整）。 */
     private final double inputPrice;
     private final double outputPrice;
@@ -114,6 +121,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
             @Value("${ea.agentscope.pricing.output:0.00000028}") double outputPrice,
             @Value("${ea.agentscope.pricing.cached:0.0000000028}") double cachedPrice,
             @Value("${ea.agentscope.skills-dir:agentscope-skills}") String skillsDir,
+            @Value("${ea.agentscope.http.timeout-ms:120000}") long llmTimeoutMs,
+            @Value("${ea.agentscope.http.max-retries:0}") int llmMaxRetries,
             AgentToolRegistry toolRegistry,
             McpClientRegistry mcpRegistry,
             KnowledgeBaseService knowledgeService,
@@ -124,6 +133,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
         this.apiKey = apiKey;
         this.baseUrl = baseUrl;
         this.workspace = workspace;
+        this.llmTimeoutMs = Math.max(llmTimeoutMs, 0);
+        this.llmMaxRetries = Math.max(llmMaxRetries, 0);
         this.inputPrice = inputPrice;
         this.outputPrice = outputPrice;
         this.cachedPrice = cachedPrice;
@@ -137,13 +148,35 @@ public class AgentscopeAgentEngine implements AgentEngine {
     }
 
     private Model resolveModel() {
-        if ((apiKey == null || apiKey.isBlank()) && (baseUrl == null || baseUrl.isBlank())) {
+        ModelCreationContext.Builder b = ModelCreationContext.builder();
+        boolean hasEndpoint = (apiKey != null && !apiKey.isBlank()) || (baseUrl != null && !baseUrl.isBlank());
+        if (hasEndpoint) {
+            b.apiKey(apiKey == null || apiKey.isBlank() ? null : apiKey)
+                    .baseUrl(baseUrl == null || baseUrl.isBlank() ? null : baseUrl);
+        }
+        // HTTP 兜底：不配时 agentscope 对模型调用「无限等待」，工具结果后的下一轮推理一旦无返回，
+        // run 永久停在 EXECUTING（实证：run 110/114/116）。此处经 GenerateOptions.ExecutionConfig
+        // 对单个模型调用设置总时长超时与重试；两者均 0/空时行为退化为现状（零回归）。
+        if (llmTimeoutMs > 0 || llmMaxRetries > 0) {
+            var ec = ExecutionConfig.builder();
+            if (llmTimeoutMs > 0) {
+                ec.timeout(Duration.ofMillis(llmTimeoutMs));
+            }
+            if (llmMaxRetries > 0) {
+                ec.maxAttempts(llmMaxRetries + 1)
+                        .initialBackoff(Duration.ofSeconds(2))
+                        .maxBackoff(Duration.ofSeconds(30));
+            }
+            b.component(GenerateOptions.class, GenerateOptions.builder()
+                    .executionConfig(ec.build())
+                    .build());
+            // component 属不透明缓存输入，显式 cacheId 使同进程复用同一模型实例（含 OkHttp client）
+            b.cachePolicy(io.agentscope.core.model.CachePolicy.ENABLED)
+                    .cacheId("ea-agentscope-" + model);
+        } else if (!hasEndpoint) {
             return ModelRegistry.resolve(model);
         }
-        return ModelRegistry.resolve(model, ModelCreationContext.builder()
-                .apiKey(apiKey == null || apiKey.isBlank() ? null : apiKey)
-                .baseUrl(baseUrl == null || baseUrl.isBlank() ? null : baseUrl)
-                .build());
+        return ModelRegistry.resolve(model, b.build());
     }
 
     @Override
