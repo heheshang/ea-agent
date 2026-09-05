@@ -1,6 +1,7 @@
 package com.eaagent.app;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.eaagent.agent.service.KnowledgeBaseService;
 import com.eaagent.common.CryptoService;
 import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
@@ -53,6 +54,7 @@ public class SeedDataInitializer implements ApplicationRunner {
     private final CustomerMapper customerMapper;
     private final UnsubscribeMapper unsubscribeMapper;
     private final KnowledgeMapper knowledgeMapper;
+    private final KnowledgeBaseService knowledgeService;
     private final PasswordEncoder encoder;
     private final CryptoService cryptoService;
     private final boolean enabled;
@@ -62,6 +64,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                                TemplateMapper templateMapper, CampaignMapper campaignMapper,
                                CustomerMapper customerMapper, UnsubscribeMapper unsubscribeMapper,
                                KnowledgeMapper knowledgeMapper,
+                               KnowledgeBaseService knowledgeService,
                                PasswordEncoder encoder, CryptoService cryptoService,
                                @Value("${ea.seed.enabled:true}") boolean enabled) {
         this.tenantMapper = tenantMapper;
@@ -73,6 +76,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         this.customerMapper = customerMapper;
         this.unsubscribeMapper = unsubscribeMapper;
         this.knowledgeMapper = knowledgeMapper;
+        this.knowledgeService = knowledgeService;
         this.encoder = encoder;
         this.cryptoService = cryptoService;
         this.enabled = enabled;
@@ -299,6 +303,7 @@ public class SeedDataInitializer implements ApplicationRunner {
             k.setUpdatedAt(now);
             knowledgeMapper.insert(k);
         }
+        knowledgeService.backfillEmbeddings();
         log.info("knowledge seeded: tenant={} count={}", tenantId, rows.length);
     }
 

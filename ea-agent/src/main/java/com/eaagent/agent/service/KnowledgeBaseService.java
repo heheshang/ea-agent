@@ -8,6 +8,9 @@ import com.eaagent.common.ErrorCode;
 import com.eaagent.common.PageResult;
 import com.eaagent.ontology.mapper.KnowledgeMapper;
 import com.eaagent.ontology.model.KnowledgeEntity;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,28 +18,35 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * 知识库服务（ea-agent）：租户级知识条目的管理 + 对话检索注入。
  *
- * <p>检索策略：内存关键词加权打分（确定性、零外部依赖、中文友好）——
- * query 按空白/标点/符号切词：CJK 段生成字符二元组（长度 &gt;= 2，单字丢弃），latin 段整体小写（长度 &gt;= 2）；
- * 每条目得分 = 标题命中 +3 + 标签命中 +2 + 内容命中 +1（子串包含、逐 term 累加）；
- * 总分 &gt;= {@link #MIN_SCORE} 才入选（去通用词噪声），按分倒序、同分按更新时间倒序，取 topK。
- * 后续如需向量检索（embedding/pgvector），在同一注入点替换本实现即可，调用方无感知。
+ * <p>检索策略：Postgres pgvector 余弦检索（V7 迁移新增 embedding vector(256) 列 + HNSW 索引）。
+ * query 与条目均经 {@link #tokenize} 切词（CJK 字符二元组 / latin 词整体小写），再按特征哈希
+ * （hashing trick）向量化：词项以标题 +3 / 标签 +2 / 内容 +1 加权（与旧内存打分权重一致），
+ * 双哈希映射到 {@link #EMBEDDING_DIM} 维（h1 定维、h2 定号）带符号累加后 L2 归一；查询向量每词项权重 1。
+ * 排名由 SQL 完成（embedding &lt;=&gt; 余弦距离升序，LIMIT topK×{@link #CANDIDATE_FACTOR} 取回余量），
+ * Service 侧再按 {@link #MIN_COSINE} 阈值过滤弱命中（对齐旧 MIN_SCORE=2 语义：标题/标签命中必过阈，
+ * 内容通常需 ≥2 个独立词），命中得分为余弦相似度（0..1）。
+ * 向量在 create/update 后即时维护，启动时幂等回填存量（embedding IS NULL，含 Seed 直插行）。
  */
 @Service
 public class KnowledgeBaseService {
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseService.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    /** 检索加载上限：租户启用条目过多时的保护（一般租户 KB 远小于此）。 */
-    static final int MAX_LOAD = 1000;
-    /** 入选最低分：命中标题/标签即过，或内容至少 2 个独立词（过滤"如何/什么"等共性词噪声）。 */
-    static final int MIN_SCORE = 2;
+    /** 特征向量维度：须与 V7 迁移 knowledge.embedding vector(256) 一致。 */
+    static final int EMBEDDING_DIM = 256;
+    /** 入选最低余弦相似度：单字段 1 个共性词（短查询）贡献约 0.05~0.1，标题/标签命中显著更高，过滤"如何/什么"类噪声。 */
+    static final double MIN_COSINE = 0.1;
+    /** SQL 取回余量倍率：先取 topK×N，阈值过滤后截断，避免批量相似条目挤占候选。 */
+    static final int CANDIDATE_FACTOR = 5;
     /** 注入条数上限默认值（可经 ea.knowledge.top-k 覆盖）。 */
     static final int DEFAULT_TOP_K = 3;
 
@@ -97,6 +107,7 @@ public class KnowledgeBaseService {
         e.setCreatedAt(now);
         e.setUpdatedAt(now);
         knowledgeMapper.insert(e);
+        refreshEmbedding(e);
         log.info("knowledge created id={} tenantId={} title={}", e.getId(), tenantId, truncate(title, 60));
         return e;
     }
@@ -127,8 +138,10 @@ public class KnowledgeBaseService {
         }
         uw.set(KnowledgeEntity.COL_UPDATED_AT, Instant.now());
         knowledgeMapper.update(null, uw);
+        KnowledgeEntity updated = get(tenantId, id);
+        refreshEmbedding(updated);
         log.info("knowledge updated id={} tenantId={}", id, tenantId);
-        return get(tenantId, id);
+        return updated;
     }
 
     /** 物理删除（表无 deleted 列；先查存在性否则 E-12007）。 */
@@ -147,7 +160,7 @@ public class KnowledgeBaseService {
         return searchScored(tenantId, query, this.topK).stream().map(KnowledgeHit::entry).toList();
     }
 
-    /** 检索（可调 topK 并暴露得分，供知识库管理页"试检索"预览）。 */
+    /** 检索（可调 topK 并暴露得分，供知识库管理页"试检索"预览）：pgvector 余弦 topK + 双闸过滤。 */
     public List<KnowledgeHit> searchScored(Long tenantId, String query, int topK) {
         int k = Math.max(topK, 0);
         if (tenantId == null || query == null || query.isBlank() || k == 0) {
@@ -157,25 +170,173 @@ public class KnowledgeBaseService {
         if (terms.isEmpty()) {
             return List.of();
         }
-        List<KnowledgeEntity> all = knowledgeMapper.selectList(new QueryWrapper<KnowledgeEntity>()
-                .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
-                .eq(KnowledgeEntity.COL_ENABLED, true)
-                .orderByDesc(KnowledgeEntity.COL_UPDATED_AT)
-                .last("LIMIT " + MAX_LOAD));
-        if (all.isEmpty()) {
-            return List.of();
-        }
+        String queryVec = toVectorLiteral(embedQuery(query));
+        List<Map<String, Object>> rows =
+                knowledgeMapper.searchSimilar(tenantId, queryVec, Math.min(k * CANDIDATE_FACTOR, 100));
         List<KnowledgeHit> hits = new ArrayList<>();
-        for (KnowledgeEntity e : all) {
-            int score = score(e, terms);
-            if (score >= MIN_SCORE) {
-                hits.add(new KnowledgeHit(e, score));
+        for (Map<String, Object> row : rows) {
+            double cosine = 1.0 - ((Number) row.get("distance")).doubleValue();
+            if (cosine < MIN_COSINE) {
+                break; // 距离升序 → 越后越不相似，首个低于阈值即可截断
+            }
+            KnowledgeEntity e = toEntity(row);
+            if (score(e, terms) < 1) {
+                continue; // 无任何共同词：哈希碰撞噪声（如"灰度发布"撞上无关查询），沿用旧"无命中不入选"语义
+            }
+            hits.add(new KnowledgeHit(e, round4(Math.min(Math.max(cosine, 0), 1))));
+        }
+        return hits.size() > k ? hits.subList(0, k) : hits;
+    }
+
+    // ---------- 特征向量（hashing trick，确定性、零外部依赖） ----------
+
+    /** 词项 → 加权频次：标题 +3、标签 +2、内容 +1（与旧打分权重一致；逐字段去重、跨字段累加）。 */
+    static Map<String, Integer> weightedTerms(KnowledgeEntity e) {
+        Map<String, Integer> counts = new HashMap<>();
+        countTerms(counts, tokenize(e.getTitle() == null ? "" : e.getTitle()), 3);
+        String tags = e.getTags() == null ? "" : String.join(" ", e.getTags());
+        countTerms(counts, tokenize(tags), 2);
+        countTerms(counts, tokenize(e.getContent() == null ? "" : e.getContent()), 1);
+        return counts;
+    }
+
+    private static void countTerms(Map<String, Integer> counts, List<String> terms, int weight) {
+        for (String t : terms) {
+            counts.merge(t, weight, Integer::sum);
+        }
+    }
+
+    /** 特征哈希向量：term → (h1 定维、h2 定号) 加权累加，L2 归一；输入经 L2 归一后可直接点积求余弦。 */
+    static float[] embed(Map<String, Integer> weighted) {
+        float[] v = new float[EMBEDDING_DIM];
+        for (Map.Entry<String, Integer> en : weighted.entrySet()) {
+            String t = en.getKey();
+            int idx = Math.floorMod(t.hashCode(), EMBEDDING_DIM);
+            int sign = ((t + "\u0001").hashCode() & 1) == 0 ? 1 : -1;
+            v[idx] += sign * en.getValue();
+        }
+        float norm = 0f;
+        for (float f : v) {
+            norm += f * f;
+        }
+        norm = (float) Math.sqrt(norm);
+        if (norm > 1e-8f) {
+            for (int i = 0; i < v.length; i++) {
+                v[i] /= norm;
             }
         }
-        hits.sort(Comparator.comparingInt((KnowledgeHit h) -> h.score).reversed()
-                .thenComparing(h -> h.entry().getUpdatedAt(), Comparator.nullsLast(Comparator.reverseOrder())));
-        return hits.subList(0, Math.min(k, hits.size()));
+        return v;
     }
+
+    /** 条目 → 向量。 */
+    static float[] embed(KnowledgeEntity e) {
+        return embed(weightedTerms(e));
+    }
+
+    /** 查询 → 查询向量（每词项权重 1）。 */
+    static float[] embedQuery(String query) {
+        Map<String, Integer> w = new HashMap<>();
+        for (String t : tokenize(query)) {
+            w.put(t, 1);
+        }
+        return embed(w);
+    }
+
+    /** float[] → pgvector 字面量（[..] 方括号，pgvector 0.7+ 支持）。 */
+    static String toVectorLiteral(float[] v) {
+        StringBuilder sb = new StringBuilder(v.length * 10);
+        sb.append('[');
+        for (int i = 0; i < v.length; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(String.format(Locale.ROOT, "%.8f", v[i]));
+        }
+        return sb.append(']').toString();
+    }
+
+    /** 余弦相似度（两向量均已 L2 归一 → 点积）。 */
+    static double cosine(float[] a, float[] b) {
+        double s = 0;
+        for (int i = 0; i < Math.min(a.length, b.length); i++) {
+            s += (double) a[i] * b[i];
+        }
+        return s;
+    }
+
+    /** 计算并写入条目向量（create/update 后调用；幂等，仅覆盖本行）。 */
+    private void refreshEmbedding(KnowledgeEntity e) {
+        if (e.getId() == null) {
+            return;
+        }
+        knowledgeMapper.updateEmbedding(e.getId(), toVectorLiteral(embed(e)));
+    }
+
+    private static KnowledgeEntity toEntity(Map<String, Object> row) {
+        KnowledgeEntity e = new KnowledgeEntity();
+        e.setId(((Number) row.get("id")).longValue());
+        e.setTenantId(((Number) row.get("tenant_id")).longValue());
+        e.setTitle((String) row.get("title"));
+        e.setContent((String) row.get("content"));
+        e.setTags(parseTags((String) row.get("tags")));
+        e.setEnabled((Boolean) row.get("enabled"));
+        e.setCreatedAt(toInstant(row.get("created_at")));
+        e.setUpdatedAt(toInstant(row.get("updated_at")));
+        return e;
+    }
+
+    private static List<String> parseTags(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return OBJECT_MAPPER.readValue(json, new TypeReference<List<String>>() {
+            });
+        } catch (Exception ex) {
+            log.warn("knowledge tags 解析失败: {}", json);
+            return List.of();
+        }
+    }
+
+    private static Instant toInstant(Object v) {
+        if (v instanceof java.sql.Timestamp ts) {
+            return ts.toInstant();
+        }
+        return v instanceof Instant i ? i : null;
+    }
+
+    private static double round4(double v) {
+        return Math.round(v * 10000) / 10000.0;
+    }
+
+    // ---------- 向量回填 ----------
+
+    /**
+     * 幂等补齐缺失向量（embedding IS NULL）：V7 迁移前的存量行、Seed 直插行。
+     * 启动时（@PostConstruct）与 Seed 落库后调用；表小逐条计算写入，开销可忽略。
+     */
+    public void backfillEmbeddings() {
+        List<KnowledgeEntity> missing = knowledgeMapper.selectList(
+                new QueryWrapper<KnowledgeEntity>().isNull("embedding").last("LIMIT 1000"));
+        if (missing.isEmpty()) {
+            return;
+        }
+        for (KnowledgeEntity e : missing) {
+            refreshEmbedding(e);
+        }
+        log.info("knowledge embedding 回填: 条数={}", missing.size());
+    }
+
+    @PostConstruct
+    void ensureEmbeddingsAtStartup() {
+        try {
+            backfillEmbeddings();
+        } catch (Exception ex) {
+            log.error("knowledge embedding 启动回填失败（缺失向量条目在检索中被过滤，不阻断启动）", ex);
+        }
+    }
+
+    // ---------- 切词 ----------
 
     /**
      * 切词：空白/标点/符号切分；CJK 段按字符二元组（"退订规范" → 退订/订规/规范），
@@ -211,7 +372,11 @@ public class KnowledgeBaseService {
         return false;
     }
 
-    /** 加权打分：标题 +3、标签 +2、内容 +1，逐 term 子串包含累加。 */
+    /**
+     * 词覆盖校验（入选闸门，非排序依据）：标题 +3、标签 +2、内容 +1，逐 term 子串包含累加。
+     * 仅用于把 pgvector 候选中的哈希碰撞噪声（向量近但无共同词）剔除，等价旧"无命中不入选"语义；
+     * 排序完全由 SQL 余弦距离决定。
+     */
     static int score(KnowledgeEntity e, List<String> terms) {
         String title = e.getTitle() == null ? "" : e.getTitle().toLowerCase(Locale.ROOT);
         String tags = e.getTags() == null ? ""
@@ -236,7 +401,7 @@ public class KnowledgeBaseService {
         return s == null || s.length() <= max ? s : s.substring(0, max) + "…";
     }
 
-    /** 检索命中：条目 + 得分。 */
-    public record KnowledgeHit(KnowledgeEntity entry, int score) {
+    /** 检索命中：条目 + 相似度得分（0..1）。 */
+    public record KnowledgeHit(KnowledgeEntity entry, double score) {
     }
 }

@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector 镜像（捆绑 PostgreSQL 16.15，兼容既有 16.14 数据卷；提供 vector 扩展供知识库余弦检索）
+    image: pgvector/pgvector:pg16
     container_name: ea-postgres
     environment:
       POSTGRES_DB: eaagent
