@@ -6,6 +6,7 @@ import com.eaagent.common.ErrorCode;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.EventEntity;
+import com.eaagent.ontology.type.FieldDef;
 import com.eaagent.ontology.type.FieldType;
 import com.eaagent.ontology.type.ObjectTypeDef;
 import com.eaagent.ontology.type.TypeRegistry;
@@ -88,11 +89,32 @@ public final class RuleEngine {
             return;
         }
         // 物理列白名单
-        String column = toSnake(path);
-        if (!typeDef.isQueryable(path)) {
+        FieldDef f = typeDef.field(path);
+        if (f == null || !f.queryable()) {
             throw new BizException(ErrorCode.DSL_PARSE_ERROR);
         }
-        applyColumn(w, column, p.op(), p.value(), typeDef.field(path).type());
+        String column = toSnake(path);
+        if (f.type() == FieldType.JSON) {
+            applyJsonArray(w, column, p.op(), p.value());
+            return;
+        }
+        applyColumn(w, column, p.op(), p.value(), f.type());
+    }
+
+    /** jsonb 数组列（如 tags）：CONTAINS/== → 包含（@>）；EXISTS → 非空数组。字符串值包装为单元素数组。 */
+    private void applyJsonArray(QueryWrapper<?> w, String column, String op, Object value) {
+        switch (op) {
+            case "CONTAINS", "==" -> {
+                Object v = value instanceof List<?> list ? list : List.of(String.valueOf(value));
+                w.apply(column + " @> {0}::jsonb", JsonUtils.write(v));
+            }
+            case "!=" -> {
+                Object v = value instanceof List<?> list ? list : List.of(String.valueOf(value));
+                w.apply("NOT (" + column + " @> {0}::jsonb)", JsonUtils.write(v));
+            }
+            case "EXISTS" -> w.ne(column, "[]");
+            default -> throw new BizException(ErrorCode.DSL_PARSE_ERROR);
+        }
     }
 
     private void applyColumn(QueryWrapper<?> w, String column, String op, Object value, FieldType type) {
@@ -113,12 +135,20 @@ public final class RuleEngine {
 
     /** attributes.* 动态字段：jsonb containment —— attributes @> {"k": v}；EXISTS → ? 'k'。 */
     private void applyAttributes(ObjectTypeDef typeDef, QueryWrapper<?> w, PredNode p) {
-        String attrPath = p.path().substring("attributes.".length());
-        String key = attrPath;
+        String path = p.path();
+        boolean bare = path.length() == "attributes".length();
+        String key = bare ? "" : path.substring("attributes.".length());
         String col = CustomerEntity.COL_ATTRIBUTES;
         String op = p.op();
         switch (op) {
-            case "EXISTS" -> w.apply(col + " ? {0}", key);
+            // 无键 EXISTS = 有任意属性；有键 EXISTS = 键存在（jsonb_exists 避开 apply 中 ? 占位符冲突）
+            case "EXISTS" -> {
+                if (bare) {
+                    w.ne(col, "{}");
+                } else {
+                    w.apply("jsonb_exists(" + col + ", {0})", key);
+                }
+            }
             case "CONTAINS" -> w.apply(col + "->{0} @> {1}::jsonb", key, JsonUtils.write(p.value()));
             case "==" -> w.apply(col + " @> {0}::jsonb", JsonUtils.write(Map.of(key, p.value())));
             case "!=" -> w.apply("NOT (" + col + " @> {0}::jsonb)", JsonUtils.write(Map.of(key, p.value())));
@@ -128,10 +158,18 @@ public final class RuleEngine {
 
     /** payload.* 动态字段：同 attributes 机制（事件载荷关键词查询）。 */
     private void applyPayload(ObjectTypeDef typeDef, QueryWrapper<?> w, PredNode p) {
-        String key = p.path().substring("payload.".length());
+        String path = p.path();
+        boolean bare = path.length() == "payload".length();
+        String key = bare ? "" : path.substring("payload.".length());
         String col = EventEntity.COL_PAYLOAD;
         switch (p.op()) {
-            case "EXISTS" -> w.apply(col + " ? {0}", key);
+            case "EXISTS" -> {
+                if (bare) {
+                    w.ne(col, "{}");
+                } else {
+                    w.apply("jsonb_exists(" + col + ", {0})", key);
+                }
+            }
             case "CONTAINS" -> w.apply(col + "->{0} @> {1}::jsonb", key, JsonUtils.write(p.value()));
             case "==", "!=" -> w.apply(col + "->{0} @> {1}::jsonb", key, JsonUtils.write(p.value()));
             default -> throw new BizException(ErrorCode.DSL_PARSE_ERROR);
@@ -211,7 +249,7 @@ public final class RuleEngine {
             skipWs();
             String op = op();
             skipWs();
-            Object value = value();
+            Object value = "EXISTS".equals(op) ? null : value();
             return new PredNode(path, op, value);
         }
 

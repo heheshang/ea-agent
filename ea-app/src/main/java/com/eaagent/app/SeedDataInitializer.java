@@ -256,6 +256,7 @@ public class SeedDataInitializer implements ApplicationRunner {
             c.setPhone(row[0]);
             c.setEmail(row[1]);
             c.setAttributes(Map.of("preferred_channel", "console", "name", row[2]));
+            c.setTags(List.of("示例", row[2]));
             c.setStatus("ACTIVE");
             c.setCreatedAt(Instant.now());
             c.setUpdatedAt(Instant.now());

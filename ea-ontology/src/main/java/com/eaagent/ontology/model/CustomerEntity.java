@@ -21,6 +21,7 @@ public class CustomerEntity {
     public static final String COL_EMAIL = "email";
     public static final String COL_WECHAT_OPENID = "wechat_openid";
     public static final String COL_ATTRIBUTES = "attributes";
+    public static final String COL_TAGS = "tags";
     public static final String COL_STATUS = "status";
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
@@ -34,6 +35,8 @@ public class CustomerEntity {
     private String wechatOpenid;
     @TableField(typeHandler = JacksonTypeHandler.class)
     private java.util.Map<String, Object> attributes;   // jsonb
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private java.util.List<String> tags;               // jsonb 数组（用户标签）
     private String status;
     private Instant createdAt;
     private Instant updatedAt;

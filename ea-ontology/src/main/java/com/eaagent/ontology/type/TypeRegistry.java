@@ -34,7 +34,8 @@ public final class TypeRegistry {
                         FieldDef.q("updated_at", FieldType.DATETIME),
                         FieldDef.s("phone", FieldType.STRING),
                         FieldDef.s("email", FieldType.STRING),
-                        FieldDef.s("wechat_openid", FieldType.STRING))));
+                        FieldDef.s("wechat_openid", FieldType.STRING),
+                        FieldDef.q("tags", FieldType.JSON))));
         register(new ObjectTypeDef("audience", AudienceEntity.class,
                 List.of(),
                 List.of(

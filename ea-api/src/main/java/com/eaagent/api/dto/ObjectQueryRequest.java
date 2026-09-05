@@ -11,4 +11,5 @@ public class ObjectQueryRequest {
     private String sort;        // -created_at
     private String pageToken;
     private Integer limit;
+    private String keyword;     // 模糊查询（客户：姓名/手机/邮箱/外部 ID）
 }

@@ -18,6 +18,7 @@ import com.eaagent.ontology.mapper.DeliveryMapper;
 import com.eaagent.ontology.mapper.EventMapper;
 import com.eaagent.ontology.mapper.TemplateMapper;
 import com.eaagent.ontology.model.AudienceEntity;
+import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.DeliveryEntity;
 import com.eaagent.ontology.model.EventEntity;
 import com.eaagent.ontology.rule.RuleEngine;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.time.Instant;
 
 /**
  * 对象 API 服务（3.2）：统一搜索 / 详情 / links / stats。
@@ -67,6 +69,7 @@ public class ObjectApiService {
         QueryWrapper w = compiled;
         w.eq(DeliveryEntity.COL_TENANT_ID, tenantId);
         applyDynamicSecurityFilter(def, w);
+        applyKeyword(def, w, req.getKeyword());
         applySort(def, w, req.getSort());
 
         // count 独立 wrapper：selectCount 会改写 select 为 COUNT(*)，与 list wrapper
@@ -76,6 +79,7 @@ public class ObjectApiService {
         QueryWrapper countW = countCompiled;
         countW.eq(DeliveryEntity.COL_TENANT_ID, tenantId);
         applyDynamicSecurityFilter(def, countW);
+        applyKeyword(def, countW, req.getKeyword());
 
         BaseMapper<?> mapper = mapperFor(type);
         long total = mapper.selectCount(countW);
@@ -102,6 +106,50 @@ public class ObjectApiService {
         @SuppressWarnings("unchecked")
         BaseMapper<T> mapper = (BaseMapper<T>) mapperForEntity(entityCls);
         return mapper.selectOne(new QueryWrapper<T>().eq(DeliveryEntity.COL_ID, id).eq(DeliveryEntity.COL_TENANT_ID, tenantId));
+    }
+
+    /**
+     * 画像更新（管理端）：仅 customer 类型，白名单字段 attributes / tags，均为整表替换。
+     * 整表替换：前端编辑对话框所见即所得（删除属性/标签即生效）；与 Agent 侧
+     * UpdateCustomerStateAction 的 attributes 深合并增量语义区分（运行期画像注入，互不覆盖）。
+     * 非法字段直接 PARAM_ERROR，不允许部分更新混入基础列。
+     */
+    public Map<String, Object> update(String type, Long id, Map<String, Object> patch) {
+        if (!"customer".equals(type)) {
+            throw new BizException(ErrorCode.PARAM_ERROR);
+        }
+        long tenantId = TenantContext.requiredTenantId();
+        CustomerEntity c = customerMapper.selectOne(new QueryWrapper<CustomerEntity>()
+                .eq(CustomerEntity.COL_ID, id).eq(CustomerEntity.COL_TENANT_ID, tenantId));
+        if (c == null) {
+            throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
+        }
+        if (patch.containsKey("attributes")) {
+            Object v = patch.get("attributes");
+            if (!(v instanceof Map<?, ?>)) {
+                throw new BizException(ErrorCode.PARAM_ERROR);
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> attrs = (Map<String, Object>) v;
+            c.setAttributes(new LinkedHashMap<>(attrs));
+        }
+        if (patch.containsKey("tags")) {
+            Object v = patch.get("tags");
+            if (!(v instanceof List<?>)) {
+                throw new BizException(ErrorCode.PARAM_ERROR);
+            }
+            List<String> tags = new ArrayList<>();
+            for (Object o : (List<?>) v) {
+                if (o != null) {
+                    tags.add(o.toString());
+                }
+            }
+            c.setTags(tags);
+        }
+        c.setUpdatedAt(Instant.now());
+        customerMapper.updateById(c);
+        ObjectTypeDef def = TypeRegistry.get(type);
+        return project(def, lookup(def, id, tenantId), true);
     }
 
     public List<Map<String, Object>> links(String type, Long id, String relation) {
@@ -173,6 +221,20 @@ public class ObjectApiService {
     }
 
     // ---- 内部 ----
+
+    /** 模糊查询（客户管理页搜索框）：姓名(attributes.name)/手机/邮箱/外部 ID 任一 LIKE。 */
+    @SuppressWarnings("rawtypes")
+    private void applyKeyword(ObjectTypeDef def, QueryWrapper w, String keyword) {
+        if (!"customer".equals(def.name()) || keyword == null || keyword.isBlank()) {
+            return;
+        }
+        String k = keyword.trim();
+        w.and(q -> {
+            @SuppressWarnings("rawtypes")
+            QueryWrapper qw = (QueryWrapper) q;
+            qw.apply("(external_id LIKE {0} OR phone LIKE {0} OR email LIKE {0} OR attributes->>'name' LIKE {0})", "%" + k + "%");
+        });
+    }
 
     @SuppressWarnings("rawtypes")
     private void applyDynamicSecurityFilter(ObjectTypeDef def, QueryWrapper w) {
@@ -248,7 +310,7 @@ public class ObjectApiService {
         // JsonUtils.toMap 输出驼峰 key（Jackson convertValue），API 契约用下划线名
         for (String[] entry : new String[][]{
                 {"attributes", "attributes"}, {"payload", "payload"}, {"abVariants", "ab_variants"},
-                {"triggerRule", "trigger_rule"}, {"frequencyLimit", "frequency_limit"}}) {
+                {"triggerRule", "trigger_rule"}, {"frequencyLimit", "frequency_limit"}, {"tags", "tags"}}) {
             Object v = src.get(entry[0]);
             if (v != null) {
                 out.put(entry[1], v);

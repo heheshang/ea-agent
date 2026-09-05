@@ -11,6 +11,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +58,19 @@ public class UpdateCustomerStateAction extends AbstractAction {
             }
             merged.putAll(attrs);
             c.setAttributes(merged);
+        }
+        Object tagsRaw = req.get("tags");
+        if (tagsRaw instanceof List<?> tagsIn) {
+            List<String> merged = new ArrayList<>();
+            if (c.getTags() != null) {
+                merged.addAll(c.getTags());
+            }
+            for (Object o : tagsIn) {
+                if (o != null && !merged.contains(o.toString())) {
+                    merged.add(o.toString());
+                }
+            }
+            c.setTags(merged);
         }
         c.setUpdatedAt(Instant.now());
         customerMapper.updateById(c);

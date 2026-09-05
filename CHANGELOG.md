@@ -29,6 +29,8 @@
 - **Ontology 链路图**：新增 Function 层（引擎 → 工具 → Action/Function → 对象），运行时统计按 callFunction 入参 name 拆分聚合
 - **错误码**：新增 17xxx Function 段（E-17001 Function 未注册），详细设计附录 B 同步
 - **触发规则参数优化**：campaign `trigger_rule` 的 cooldown/window 保存时支持宽松格式（`1h`/`30m`/`2d`/`90s`/纯数字秒/ISO-8601）并归一为 ISO-8601 落库（对齐详细设计 8.4 契约 `{"event_type","window":"1d","cooldown":"1h"}`）；非法格式保存即返回 E-13002 明确报错（此前保存成功、触发时 `Duration.parse` 500/DLQ）；event_type trim 并限长 64；创建/更新两路径统一接入，发送侧宽松解析兜底存量脏值；前端触发规则表单占位示例同步
+- **客户画像（标签 + 属性）管理**：新增 `customer.tags` jsonb 列（V8 迁移 + GIN 索引，存量默认 `[]`）；管理端客户列表新增标签/属性编辑对话框——标签多选可创建、属性动态键值行 + 常用属性快捷键（gender/birthday/hobbies 等，值支持文本与 JSON）；`PUT /api/objects/customer/{id}` 白名单 attributes/tags 整表替换（管理端所见即所得，非法字段报错、私有列禁改），`UpdateCustomerStateAction` 运行期 attributes 深合并增量（两语义互不干扰）；查询 DSL 新增 JSON 数组列谓词——`tags CONTAINS 'VIP'`/`tags == 'VIP'`（数组包含 `@>`）、`tags != 'VIP'`（不包含）、`tags EXISTS`（非空数组），`queryCustomers` 工具 filter 描述同步示例；同时修复 DSL `EXISTS` 无值操作符解析越界（此前任何 EXISTS 子句均 500）与 `attributes.* EXISTS` 键存在检查（`jsonb_exists`，规避 apply 中 `?` 占位符冲突、无键 EXISTS = 有任意属性）
+- **客户列表分页与模糊查询**：客户管理页由游标模式改为 el-pagination 分页（20 条/页、上一页/页码/下一页），固定 `sort=-id` 排序——同秒 created_at 批量数据翻页不重不漏（此前默认排序不定，翻页重复/遗漏），页脚 `共 N 条` 实时总数；页头新增搜索框——`keyword` 参数对姓名（`attributes->>'name'`）/手机/邮箱/外部 ID 任一 `LIKE` 模糊匹配（仅 customer 生效，jsonb tags 列不参与，避免包含语义混淆），与 DSL filter 以 AND 组合，搜索重置回第 1 页
 
 ### Changed
 
