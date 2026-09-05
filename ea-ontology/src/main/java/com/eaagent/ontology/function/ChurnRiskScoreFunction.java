@@ -72,13 +72,13 @@ public class ChurnRiskScoreFunction implements Function {
 
         double score = n == 0 ? BASE_SCORE : Math.max(0.1, 1.0 - n * EVENT_DECAY);
         String status = c.getStatus();
-        if (status != null && !"ACTIVE".equals(status)) {
+        if (status != null && !CustomerEntity.STATUS_ACTIVE.equals(status)) {
             score = Math.min(0.95, score + INACTIVE_PENALTY);
         }
         score = Math.round(score * 100) / 100.0;
         String level = score >= 0.7 ? "HIGH" : score >= 0.4 ? "MEDIUM" : "LOW";
         return Map.of("customer_id", cid, "score", score, "level", level, "model", "v1-heuristic",
                 "events_30d", n, "status", status == null ? "" : status,
-                "basis", "近30天事件数 " + n + "（每单衰减0.2，无事件0.9）" + (!"ACTIVE".equals(status) ? " + 非ACTIVE状态加成0.15" : ""));
+                "basis", "近30天事件数 " + n + "（每单衰减0.2，无事件0.9）" + (!CustomerEntity.STATUS_ACTIVE.equals(status) ? " + 非ACTIVE状态加成0.15" : ""));
     }
 }

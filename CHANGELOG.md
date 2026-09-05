@@ -34,6 +34,8 @@
 
 ### Changed
 
+- **后端源码重构（SRP/OCP/DIP/DRY 收敛）**：常量去重至单一事实源——实体状态/审核/AB 模式常量落位 8 个实体类（`CampaignEntity.STATUS_*`、`DeliveryEntity.STATUS_*`、`TemplateEntity.REVIEW_*`、`AgentRunEntity.STATUS_*` 及 Customer/Tenant/TenantUser/Audience `STATUS_ACTIVE`），跨域共享值新增 `ea-common` 常量类（`Roles` 角色与权限级别矩阵、`Channels` 通道全集、`Actors` 系统/用户/Agent 身份），`AgentService.ST_*` 旧常量删除并全量改引（AgentRunWatchdog 与相关测试同步）；工具方法收敛至 `Texts`（`truncate`/`toSnake`/`toCamel`/`firstValue`）——7 处重复截断逻辑、RuleEngine/ObjectApiService/AgentToolRegistry 三份命名转换、3 处 applyAction/callFunction 入参解析全部委托单一实现（`RuleEngine.toSnake/toCamel` 保留 public static 签名、体内一行委托，测试兼容）；结构收拢——`ObjectApiService` 双 switch 合一（`mapperFor` 委托 `mapperForEntity`，行为逐 case 核对等价）、`EventConsumer.toDlq` 复用 `toStringKeyMap`（error 截断 500 无省略号不变量保留）。纯重构零行为变更（截断/解析语义逐一核对等价，日志与错误文案原样保留），全量测试 37 例通过。
+
 - **Ontology 流程图运行前全虚线、回放激活实线动效**：边线型由「静态数据驱动（有调用即实线）」改为「**回放状态驱动**」——运行前整图所有连线均为灰虚线（拓扑预览态，`engine→tool`/`tool→action·function`/`action·function→obj` 一律虚线，调用数标签与节点徽章保留）；回放每运行到一步，该步经过的节点间连线变为**红色实线**并叠加**流动光点动画**（`edge-line-flow` 亮条沿路径 `@keyframes trace-flow` 循环流动，实线本身为走通的路径），已走过的边保持实线（进度累积），⏮ 重置回到全虚线。节点置灰（无调用）与下钻逻辑不变；后端对象边 `calls/avg_ms/fails` 统计仍保留（标签、节点徽章、统计页数据源）。
 
 - **对象拓扑边统计语义说明**：`action:sendTouch→obj:delivery` 等对象边此前「有调用即实线、无调用虚线」的静态样式已被上一条取代；其携带的源聚合 `calls/avg_ms/fails` 保留，作为调用数标签、对象节点徽章与统计页数据源，线型则完全由回放进度决定。
@@ -59,6 +61,7 @@
 - **Agent 回答语言**：系统提示词明确所有面向用户的回复一律使用中文（原仅限定"建议"为中文，总结/澄清/拒绝可能输出非中文）；`sys_prompt_version` v4 → v5。
 
 - **Agent 权限下放修复（9.2）**：applyAction 此前以硬编码角色 `AGENT` 构造 ActionContext（ROLE_LEVEL 无此角色 → 0 级），`createCampaign`/`updateCustomerState`/`pauseCampaign` 在 Agent 对话中一律 E-10003 无权限；现透传发起用户 `userId/role`（`role(agent) = role(发起用户)`），权限校验回归 RBAC 矩阵。
+- **6 项行为缺口修复**：（1）`AgentService.handle` 事件 switch 补 `approval_required` 分支——事件到达即置 run 为 `AWAITING_APPROVAL` 并落库（此前事件被 default 吞掉、run 滞留 PLANNING，`approve()` 因状态不匹配永远 E-15002）；（2）`AgentToolRegistry.QueryCustomers` 删除恒等 `trim`（remove+put 同 key 同值，HashMap 上纯死代码，输出零变化）；（3）`SendTouchAction.isUnsubscribed` 删除空 if 死块（仅注释无 body），注释并入保留的 contact guard；（4）`POST /api/channels/{type}/callback` 补回执状态白名单——仅 `DELIVERED/BOUNCED/FAILED/UNSUBSCRIBED` 四终端态可回写，`PENDING/SENT` 内部态及任意非法值一律 E-10001 拒绝（校验位于验签/重放窗之后、幂等去重之前，非法值不消耗 `ea:cb:` 去重键）；（5）`sha256Hex` 三份收敛为 `Texts.sha256Hex`（UTF-8 + 小写 hex，输出逐字节等价），删 SendTouchAction/SeedDataInitializer 私有实现及随之失效的 imports；（6）详细设计 docs 对齐代码——4.3 run 状态枚举块改为 `AgentRunEntity.STATUS_*` 字符串常量说明、状态机实现引用由不存在的 `AgentStateMachine` 改为 `AgentService.handle/execute` 事件驱动描述。
 
 ## [0.1.0] - 2026-09-05
 

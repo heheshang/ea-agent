@@ -3,7 +3,9 @@ package com.eaagent.app.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.api.dto.TemplateWriteRequest;
 import com.eaagent.common.BizException;
+import com.eaagent.common.Channels;
 import com.eaagent.common.ErrorCode;
+import com.eaagent.common.Roles;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.TemplateMapper;
 import com.eaagent.ontology.model.CampaignEntity;
@@ -25,7 +27,7 @@ import java.util.regex.Pattern;
 @Service
 public class TemplateService {
 
-    private static final Set<String> CHANNELS = Set.of("sms", "email", "wechat", "push", "console");
+    private static final Set<String> CHANNELS = Channels.ALL_SET;
     private static final Pattern VAR = Pattern.compile("\\{\\{([^{}]+)}}");
 
     private final TemplateMapper templateMapper;
@@ -63,7 +65,7 @@ public class TemplateService {
         t.setTitle(req.getTitle());
         t.setContent(req.getContent());
         t.setVars(extractVars(req.getContent()));
-        t.setReviewStatus("DRAFT");
+        t.setReviewStatus(TemplateEntity.REVIEW_DRAFT);
         t.setCreatedAt(Instant.now());
         templateMapper.insert(t);
         return t;
@@ -71,7 +73,7 @@ public class TemplateService {
 
     public TemplateEntity update(Long tenantId, Long id, TemplateWriteRequest req) {
         TemplateEntity t = get(tenantId, id);
-        if (!"DRAFT".equals(t.getReviewStatus()) && !"REJECTED".equals(t.getReviewStatus())) {
+        if (!TemplateEntity.REVIEW_DRAFT.equals(t.getReviewStatus()) && !TemplateEntity.REVIEW_REJECTED.equals(t.getReviewStatus())) {
             throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
                     "仅 DRAFT|REJECTED 可编辑（当前 " + t.getReviewStatus() + "）");
         }
@@ -86,26 +88,26 @@ public class TemplateService {
 
     public TemplateEntity submit(Long tenantId, Long id) {
         TemplateEntity t = get(tenantId, id);
-        if (!"DRAFT".equals(t.getReviewStatus()) && !"REJECTED".equals(t.getReviewStatus())) {
+        if (!TemplateEntity.REVIEW_DRAFT.equals(t.getReviewStatus()) && !TemplateEntity.REVIEW_REJECTED.equals(t.getReviewStatus())) {
             throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
                     "仅 DRAFT|REJECTED 可提交审核（当前 " + t.getReviewStatus() + "）");
         }
-        t.setReviewStatus("PENDING");
+        t.setReviewStatus(TemplateEntity.REVIEW_PENDING);
         templateMapper.updateById(t);
         return t;
     }
 
     /** 审核操作：仅 REVIEWER 角色。 */
     public TemplateEntity review(Long tenantId, Long id, String role, boolean approve) {
-        if (!"REVIEWER".equals(role)) {
+        if (!Roles.REVIEWER.equals(role)) {
             throw new BizException(ErrorCode.FORBIDDEN, "审核需要 REVIEWER 角色");
         }
         TemplateEntity t = get(tenantId, id);
-        if (!"PENDING".equals(t.getReviewStatus())) {
+        if (!TemplateEntity.REVIEW_PENDING.equals(t.getReviewStatus())) {
             throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
                     "仅 PENDING 可审核（当前 " + t.getReviewStatus() + "）");
         }
-        t.setReviewStatus(approve ? "APPROVED" : "REJECTED");
+        t.setReviewStatus(approve ? TemplateEntity.REVIEW_APPROVED : TemplateEntity.REVIEW_REJECTED);
         templateMapper.updateById(t);
         return t;
     }

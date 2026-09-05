@@ -399,7 +399,8 @@ public interface AgentTool {
 **状态与转移**（对应架构 5.3）：
 
 ```java
-public enum AgentRunStatus { NEW, PLANNING, AWAITING_APPROVAL, EXECUTING, OBSERVING, COMPLETED, FAILED, CANCELLED }
+// run 状态实现为字符串常量（AgentRunEntity.STATUS_*），落库 agent_run.status 列，语义与枚举一致
+public static final String STATUS_NEW = "NEW"; // 其余：PLANNING / AWAITING_APPROVAL / EXECUTING / OBSERVING / COMPLETED / FAILED / CANCELLED
 ```
 
 | 当前 | 事件 | 到达 | 触发条件 |
@@ -415,7 +416,7 @@ public enum AgentRunStatus { NEW, PLANNING, AWAITING_APPROVAL, EXECUTING, OBSERV
 | 任意 | error | FAILED | 不可恢复错误（含 LLM 调用失败超限） |
 | 任意 | cancel | CANCELLED | 用户取消/超时 |
 
-实现：`AgentStateMachine`（状态表驱动，非法转移抛 E-15002）；每次转移写 `agent_run` 状态与时间戳 + 发 Agent 会话事件。
+实现：`AgentService.handle/execute` 事件类型驱动的状态转移（非法转移抛 E-15002，状态常量 `AgentRunEntity.STATUS_*`）；每次转移写 `agent_run` 状态与时间戳 + 发 Agent 会话事件。
 
 ### 4.4 审批门控
 

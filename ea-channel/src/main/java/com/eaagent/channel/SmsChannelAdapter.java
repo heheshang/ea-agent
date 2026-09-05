@@ -127,7 +127,7 @@ public class SmsChannelAdapter implements ChannelAdapter {
         if (d == null) {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
         }
-        d.setStatus("SENT");
+        d.setStatus(DeliveryEntity.STATUS_SENT);
         d.setChannelMsgId(msgId);
         d.setError(null);
         d.setAttempt((d.getAttempt() == null ? 0 : d.getAttempt()) + 1);

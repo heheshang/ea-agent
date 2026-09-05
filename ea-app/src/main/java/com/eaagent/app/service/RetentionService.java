@@ -62,7 +62,7 @@ public class RetentionService {
         //    同时用全量类型生成筛选项——避免过滤选择框随当前筛选消失）。
         List<DeliveryEntity> deliveries = deliveryMapper.selectList(new QueryWrapper<DeliveryEntity>()
                 .eq(DeliveryEntity.COL_TENANT_ID, tenantId)
-                .eq(DeliveryEntity.COL_STATUS, "SENT")
+                .eq(DeliveryEntity.COL_STATUS, DeliveryEntity.STATUS_SENT)
                 .ge(DeliveryEntity.COL_CREATED_AT, start)
                 .eq(campaignId != null, DeliveryEntity.COL_CAMPAIGN_ID, campaignId));
         List<EventEntity> events = eventMapper.selectList(new QueryWrapper<EventEntity>()

@@ -41,8 +41,8 @@ class AgentRunWatchdogTest {
     void executingBecomesFailedAndNewBecomesCancelled() {
         Instant old = Instant.now().minusSeconds(3600);
         AgentRunMapper mapper = staleMapper(List.of(
-                run(1L, AgentService.ST_EXECUTING, old),
-                run(2L, AgentService.ST_NEW, old)));
+                run(1L, AgentRunEntity.STATUS_EXECUTING, old),
+                run(2L, AgentRunEntity.STATUS_NEW, old)));
 
         new AgentRunWatchdog(mapper, 60_000, 900_000).sweep();
 
@@ -53,8 +53,8 @@ class AgentRunWatchdogTest {
         List<Object> setValues = uw.getAllValues().stream()
                 .flatMap(w -> w.getParamNameValuePairs().values().stream())
                 .toList();
-        assertTrue(setValues.contains(AgentService.ST_FAILED), "执行中 run 应回收为 FAILED");
-        assertTrue(setValues.contains(AgentService.ST_CANCELLED), "从未执行 run 应回收为 CANCELLED");
+        assertTrue(setValues.contains(AgentRunEntity.STATUS_FAILED), "执行中 run 应回收为 FAILED");
+        assertTrue(setValues.contains(AgentRunEntity.STATUS_CANCELLED), "从未执行 run 应回收为 CANCELLED");
     }
 
     @Test

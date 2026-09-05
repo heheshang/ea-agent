@@ -36,7 +36,7 @@ public class AuthController {
     public Result<LoginResponse> login(@RequestBody LoginRequest req) {
         TenantUserEntity user = tenantUserMapper.selectOne(new QueryWrapper<TenantUserEntity>()
                 .eq(TenantUserEntity.COL_LOGIN_NAME, req.getLoginName())
-                .eq(TenantUserEntity.COL_STATUS, "ACTIVE")
+                .eq(TenantUserEntity.COL_STATUS, TenantUserEntity.STATUS_ACTIVE)
                 .last("LIMIT 1"));
         if (user == null || !encoder.matches(req.getPassword(), user.getPasswordHash())) {
             throw new BizException(ErrorCode.UNAUTHENTICATED, "用户名或密码错误");

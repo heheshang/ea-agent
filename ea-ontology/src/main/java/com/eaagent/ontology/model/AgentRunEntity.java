@@ -32,6 +32,16 @@ public class AgentRunEntity {
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
 
+    /** status 值（NEW|PLANNING|AWAITING_APPROVAL|EXECUTING|OBSERVING|COMPLETED|FAILED|CANCELLED），状态机见 4.3。 */
+    public static final String STATUS_NEW = "NEW";
+    public static final String STATUS_PLANNING = "PLANNING";
+    public static final String STATUS_AWAITING_APPROVAL = "AWAITING_APPROVAL";
+    public static final String STATUS_EXECUTING = "EXECUTING";
+    public static final String STATUS_OBSERVING = "OBSERVING";
+    public static final String STATUS_COMPLETED = "COMPLETED";
+    public static final String STATUS_FAILED = "FAILED";
+    public static final String STATUS_CANCELLED = "CANCELLED";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long tenantId;

@@ -28,6 +28,14 @@ public class DeliveryEntity {
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
 
+    /** status 值（PENDING|SENT|DELIVERED|BOUNCED|FAILED|UNSUBSCRIBED）。 */
+    public static final String STATUS_PENDING = "PENDING";
+    public static final String STATUS_SENT = "SENT";
+    public static final String STATUS_DELIVERED = "DELIVERED";
+    public static final String STATUS_BOUNCED = "BOUNCED";
+    public static final String STATUS_FAILED = "FAILED";
+    public static final String STATUS_UNSUBSCRIBED = "UNSUBSCRIBED";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private String requestId;      // 幂等键（发送）

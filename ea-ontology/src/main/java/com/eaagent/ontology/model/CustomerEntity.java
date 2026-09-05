@@ -26,6 +26,9 @@ public class CustomerEntity {
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
 
+    /** status 值（ACTIVE|INACTIVE）。 */
+    public static final String STATUS_ACTIVE = "ACTIVE";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long tenantId;

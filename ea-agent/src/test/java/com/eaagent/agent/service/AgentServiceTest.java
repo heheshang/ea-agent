@@ -44,7 +44,7 @@ class AgentServiceTest {
         AgentRunMapper mapper = mock(AgentRunMapper.class);
         AgentRunEntity inflight = new AgentRunEntity();
         inflight.setId(99L);
-        inflight.setStatus(AgentService.ST_EXECUTING);
+        inflight.setStatus(AgentRunEntity.STATUS_EXECUTING);
         stubInflight(mapper, inflight);
 
         BizException ex = assertThrows(BizException.class,

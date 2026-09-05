@@ -9,6 +9,7 @@ import com.eaagent.api.sse.AgentSseEvent;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.JsonUtils;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
 import org.slf4j.Logger;
@@ -30,15 +31,6 @@ import java.util.Map;
 @Service
 public class AgentService {
     private static final Logger log = LoggerFactory.getLogger(AgentService.class);
-
-    public static final String ST_NEW = "NEW";
-    public static final String ST_PLANNING = "PLANNING";
-    public static final String ST_AWAITING_APPROVAL = "AWAITING_APPROVAL";
-    public static final String ST_EXECUTING = "EXECUTING";
-    public static final String ST_OBSERVING = "OBSERVING";
-    public static final String ST_COMPLETED = "COMPLETED";
-    public static final String ST_FAILED = "FAILED";
-    public static final String ST_CANCELLED = "CANCELLED";
 
     private final AgentRunMapper runMapper;
     private final StringRedisTemplate redis;
@@ -63,7 +55,7 @@ public class AgentService {
                 .eq(AgentRunEntity.COL_TENANT_ID, tenantId)
                 .eq(AgentRunEntity.COL_SESSION_ID, sessionId)
                 .in(AgentRunEntity.COL_STATUS,
-                        ST_NEW, ST_PLANNING, ST_EXECUTING, ST_OBSERVING)
+                        AgentRunEntity.STATUS_NEW, AgentRunEntity.STATUS_PLANNING, AgentRunEntity.STATUS_EXECUTING, AgentRunEntity.STATUS_OBSERVING)
                 .orderByDesc(AgentRunEntity.COL_ID)
                 .last("LIMIT 1"));
     }
@@ -89,13 +81,13 @@ public class AgentService {
         run.setUserId(userId);
         run.setRole(role);
         run.setGoal(goal);
-        run.setStatus(ST_NEW);
+        run.setStatus(AgentRunEntity.STATUS_NEW);
         run.setCreatedAt(Instant.now());
         run.setUpdatedAt(Instant.now());
         runMapper.insert(run);
         redis.delete(stepsKey(run.getId()));
         log.info("run created runId={} tenantId={} sessionId={} goal={}",
-                run.getId(), tenantId, sessionId, truncate(goal, 100));
+                run.getId(), tenantId, sessionId, Texts.truncate(goal, 100));
         return run;
     }
 
@@ -120,12 +112,12 @@ public class AgentService {
         if (steps != null && !steps.isEmpty()) {
             log.info("resume runId={} mode=replay steps={}", runId, stepCount);
             replay(steps, emitter);
-            if (ST_EXECUTING.equals(status) || ST_PLANNING.equals(status) || ST_OBSERVING.equals(status)) {
+            if (AgentRunEntity.STATUS_EXECUTING.equals(status) || AgentRunEntity.STATUS_PLANNING.equals(status) || AgentRunEntity.STATUS_OBSERVING.equals(status)) {
                 // 另一线程执行中：拒绝并发（简化）；状态未落盘完成态时如实回报
                 log.warn("resume rejected runId={} status={} reason=E-15002 concurrent execution", runId, status);
                 throw new BizException(ErrorCode.STATE_NOT_ALLOWED);
             }
-            if (ST_COMPLETED.equals(status) || ST_FAILED.equals(status) || ST_CANCELLED.equals(status)) {
+            if (AgentRunEntity.STATUS_COMPLETED.equals(status) || AgentRunEntity.STATUS_FAILED.equals(status) || AgentRunEntity.STATUS_CANCELLED.equals(status)) {
                 push(emitter, AgentSseEvent.of("done", String.valueOf(runId),
                         Map.of("status", status)));
                 return;
@@ -133,7 +125,7 @@ public class AgentService {
         } else {
             log.info("resume runId={} status={} mode=new execution", runId, status);
         }
-        if (!ST_NEW.equals(status)) {
+        if (!AgentRunEntity.STATUS_NEW.equals(status)) {
             log.warn("resume rejected runId={} status={} reason=E-15002 state not allowed", runId, status);
             throw new BizException(ErrorCode.STATE_NOT_ALLOWED);
         }
@@ -143,7 +135,7 @@ public class AgentService {
     /** 审批（4.4）：AWAITING_APPROVAL → EXECUTING / CANCELLED，记录 decision。 */
     public Map<String, Object> approve(Long runId, boolean approved, Long reviewerId, String reviewerRole) {
         AgentRunEntity run = getRun(runId);
-        if (!ST_AWAITING_APPROVAL.equals(run.getStatus())) {
+        if (!AgentRunEntity.STATUS_AWAITING_APPROVAL.equals(run.getStatus())) {
             throw new BizException(ErrorCode.STATE_NOT_ALLOWED);
         }
         List<Map<String, Object>> decisions = run.getDecisions() == null ? new ArrayList<>() : new ArrayList<>(run.getDecisions());
@@ -154,7 +146,7 @@ public class AgentService {
         d.put("reviewer_role", reviewerRole);
         d.put("at", Instant.now().toString());
         decisions.add(d);
-        String newStatus = approved ? ST_EXECUTING : ST_CANCELLED;
+        String newStatus = approved ? AgentRunEntity.STATUS_EXECUTING : AgentRunEntity.STATUS_CANCELLED;
         log.info("approve runId={} approved={} reviewerId={} targetStatus={}",
                 runId, approved, reviewerId, newStatus);
         // 靶向更新：只改状态/审批记录/更新时间，避免 updateById 用旧快照覆写统计列（usage/tokens_used/cost）
@@ -172,9 +164,9 @@ public class AgentService {
     private void execute(AgentRunEntity run, SseEmitter emitter) {
         long runId = run.getId();
         long startNanos = System.nanoTime();
-        log.info("run execute start runId={} goal={}", runId, truncate(run.getGoal(), 100));
+        log.info("run execute start runId={} goal={}", runId, Texts.truncate(run.getGoal(), 100));
         try {
-            run.setStatus(ST_PLANNING);
+            run.setStatus(AgentRunEntity.STATUS_PLANNING);
             run.setUpdatedAt(Instant.now());
             runMapper.updateById(run);
 
@@ -185,50 +177,52 @@ public class AgentService {
                     .doOnNext(ev -> handle(ev, run, emitter, plan))
                     .blockLast();
 
-            if (!ST_FAILED.equals(run.getStatus())) {
+            if (!AgentRunEntity.STATUS_FAILED.equals(run.getStatus())) {
                 // 靶向更新：只改状态/plan/更新时间。tokens_used/usage/cost/prompt_info 由引擎统计回写，
                 // updateById 会用旧快照把它们覆写回零，故禁用
                 UpdateWrapper<AgentRunEntity> uw = new UpdateWrapper<AgentRunEntity>()
                         .eq(AgentRunEntity.COL_ID, runId)
-                        .set(AgentRunEntity.COL_STATUS, ST_COMPLETED)
+                        .set(AgentRunEntity.COL_STATUS, AgentRunEntity.STATUS_COMPLETED)
                         .set(AgentRunEntity.COL_UPDATED_AT, Instant.now());
                 if (plan != null && !plan.isEmpty()) {
                     uw.set(AgentRunEntity.COL_PLAN, plan,
                             "typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler");
                 }
                 runMapper.update(null, uw);
-                push(emitter, AgentSseEvent.of("done", String.valueOf(runId), Map.of("status", ST_COMPLETED)));
+                push(emitter, AgentSseEvent.of("done", String.valueOf(runId), Map.of("status", AgentRunEntity.STATUS_COMPLETED)));
                 log.info("run execute complete runId={} status={} durationMs={}",
-                        runId, ST_COMPLETED, (System.nanoTime() - startNanos) / 1_000_000L);
+                        runId, AgentRunEntity.STATUS_COMPLETED, (System.nanoTime() - startNanos) / 1_000_000L);
             }
         } catch (Exception e) {
             log.error("agent run {} failed", runId, e);
-            run.setStatus(ST_FAILED);
+            run.setStatus(AgentRunEntity.STATUS_FAILED);
             run.setUpdatedAt(Instant.now());
             runMapper.updateById(run);
             push(emitter, AgentSseEvent.of("error", String.valueOf(runId), Map.of("message", String.valueOf(e.getMessage()))));
-            push(emitter, AgentSseEvent.of("done", String.valueOf(runId), Map.of("status", ST_FAILED)));
+            push(emitter, AgentSseEvent.of("done", String.valueOf(runId), Map.of("status", AgentRunEntity.STATUS_FAILED)));
         }
     }
 
     private void handle(EngineEvent ev, AgentRunEntity run, SseEmitter emitter, List<Map<String, Object>> plan) {
         Map<String, Object> data = JsonUtils.readMap(ev.data());
         long runId = run.getId();
-        log.debug("handle event runId={} type={} data={}", runId, ev.type(), truncate(ev.data(), 200));
+        log.debug("handle event runId={} type={} data={}", runId, ev.type(), Texts.truncate(ev.data(), 200));
         switch (ev.type()) {
             case "plan" -> {
-                run.setStatus(ST_PLANNING);
+                run.setStatus(AgentRunEntity.STATUS_PLANNING);
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> steps = (List<Map<String, Object>>) data.get("steps");
                 if (steps != null) {
                     plan.addAll(steps);
                 }
             }
-            case "tool_call" -> run.setStatus(ST_EXECUTING);
-            case "action_result" -> run.setStatus(ST_OBSERVING);
-            case "thinking_delta", "text_delta" -> run.setStatus(ST_EXECUTING);
-            case "done" -> run.setStatus(ST_COMPLETED);
-            case "error" -> run.setStatus(ST_FAILED);
+            // 审批门控（4.4）：引擎发 approval_required → 置 AWAITING_APPROVAL，等待人工审批
+            case "approval_required" -> run.setStatus(AgentRunEntity.STATUS_AWAITING_APPROVAL);
+            case "tool_call" -> run.setStatus(AgentRunEntity.STATUS_EXECUTING);
+            case "action_result" -> run.setStatus(AgentRunEntity.STATUS_OBSERVING);
+            case "thinking_delta", "text_delta" -> run.setStatus(AgentRunEntity.STATUS_EXECUTING);
+            case "done" -> run.setStatus(AgentRunEntity.STATUS_COMPLETED);
+            case "error" -> run.setStatus(AgentRunEntity.STATUS_FAILED);
             default -> { }
         }
         run.setUpdatedAt(Instant.now());
@@ -267,13 +261,5 @@ public class AgentService {
         } catch (Exception ex) {
             log.warn("sse push failed: {}", ex.toString());
         }
-    }
-
-    /** 日志长文本截断（防敏感/膨胀；目标约 100~300 字符）。 */
-    private static String truncate(String s, int limit) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= limit ? s : s.substring(0, limit) + "…";
     }
 }

@@ -3,6 +3,8 @@ package com.eaagent.app;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.agent.service.KnowledgeBaseService;
 import com.eaagent.common.CryptoService;
+import com.eaagent.common.Roles;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.ChannelConfigMapper;
@@ -29,10 +31,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -98,8 +97,8 @@ public class SeedDataInitializer implements ApplicationRunner {
             return;
         }
         Long tenantId = seedTenant();
-        Long adminId = seedUser(tenantId, "admin", "admin123", "管理员", "OPERATOR");
-        seedUser(tenantId, "reviewer", "reviewer123", "审核员", "REVIEWER");
+        Long adminId = seedUser(tenantId, "admin", "admin123", "管理员", Roles.OPERATOR);
+        seedUser(tenantId, "reviewer", "reviewer123", "审核员", Roles.REVIEWER);
         seedChannel(tenantId);
         seedSmsChannel(tenantId);
         seedEmailChannel(tenantId);
@@ -117,8 +116,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         t.setName("demo");
         t.setDomain("demo.local");
         t.setPlan("trial");
-        t.setStatus("ACTIVE");
-        t.setQuota("{\"max_daily_touch\":1000}");
+        t.setStatus(TenantEntity.STATUS_ACTIVE);
         t.setCreatedAt(Instant.now());
         tenantMapper.insert(t);
         return t.getId();
@@ -208,7 +206,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         a.setMode("DYNAMIC");
         a.setRule("status == 'ACTIVE'");
         a.setOwnerId(adminId);
-        a.setStatus("ACTIVE");
+        a.setStatus(AudienceEntity.STATUS_ACTIVE);
         a.setCreatedAt(Instant.now());
         audienceMapper.insert(a);
         return a.getId();
@@ -221,7 +219,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         t.setTitle("新人首单提醒");
         t.setContent("您好 {{name}}，您的首单专属优惠已到账。");
         t.setVars(List.of("name"));
-        t.setReviewStatus("APPROVED");
+        t.setReviewStatus(TemplateEntity.REVIEW_APPROVED);
         t.setCreatedAt(Instant.now());
         templateMapper.insert(t);
         return t.getId();
@@ -235,9 +233,9 @@ public class SeedDataInitializer implements ApplicationRunner {
         c.setChannel("console");
         c.setTemplateId(templateId);
         c.setGrayRatio(100);
-        c.setAbMode("NONE");
+        c.setAbMode(CampaignEntity.AB_MODE_NONE);
         c.setTriggerRule(Map.of("event_type", "order_placed", "window", "1d", "cooldown", "PT1H"));
-        c.setStatus("RUNNING");
+        c.setStatus(CampaignEntity.STATUS_RUNNING);
         c.setOwnerId(adminId);
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
@@ -257,7 +255,7 @@ public class SeedDataInitializer implements ApplicationRunner {
             c.setEmail(row[1]);
             c.setAttributes(Map.of("preferred_channel", "console", "name", row[2]));
             c.setTags(List.of("示例", row[2]));
-            c.setStatus("ACTIVE");
+            c.setStatus(CustomerEntity.STATUS_ACTIVE);
             c.setCreatedAt(Instant.now());
             c.setUpdatedAt(Instant.now());
             customerMapper.insert(c);
@@ -267,7 +265,7 @@ public class SeedDataInitializer implements ApplicationRunner {
     private void seedUnsubscribe(Long tenantId) {
         UnsubscribeEntity u = new UnsubscribeEntity();
         u.setTenantId(tenantId);
-        u.setCustomerKey(sha256Hex("13800000003")); // 王五退订 console，触发时跳过该客户
+        u.setCustomerKey(Texts.sha256Hex("13800000003")); // 王五退订 console，触发时跳过该客户
         u.setChannel("console");
         u.setReason("演示退订");
         u.setCreatedAt(Instant.now());
@@ -308,12 +306,4 @@ public class SeedDataInitializer implements ApplicationRunner {
         log.info("knowledge seeded: tenant={} count={}", tenantId, rows.length);
     }
 
-    static String sha256Hex(String s) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest(s.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
     }
-}

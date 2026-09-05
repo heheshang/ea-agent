@@ -1,9 +1,12 @@
 package com.eaagent.ontology.action;
 
+import com.eaagent.common.Actors;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
 import com.eaagent.common.JsonUtils;
+import com.eaagent.common.Roles;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.model.ActionLogEntity;
 import com.eaagent.ontology.service.JsonMasker;
@@ -32,7 +35,7 @@ public abstract class AbstractAction implements Action {
 
     /** 审计 actor 类型：USER | AGENT | SYSTEM（默认 USER）。 */
     protected String actorType(ActionContext ctx) {
-        return ctx.userId() == null ? "SYSTEM" : "USER";
+        return ctx.userId() == null ? Actors.SYSTEM : Actors.USER;
     }
 
     protected abstract Map<String, Object> doExecute(ActionContext ctx, ActionRequest req);
@@ -61,7 +64,7 @@ public abstract class AbstractAction implements Action {
             if (ctx.tenantId() == null) {
                 throw new BizException(ErrorCode.TENANT_CONTEXT_MISSING);
             }
-            if (ctx.userId() == null && !"SYSTEM".equals(actorType(ctx)) && !"AGENT".equals(actorType(ctx))) {
+            if (ctx.userId() == null && !Actors.SYSTEM.equals(actorType(ctx)) && !Actors.AGENT.equals(actorType(ctx))) {
                 throw new BizException(ErrorCode.UNAUTHENTICATED);
             }
             // 3. 参数校验
@@ -96,16 +99,13 @@ public abstract class AbstractAction implements Action {
         }
     }
 
-    private static final Map<String, Integer> ROLE_LEVEL = Map.of(
-            "OPERATOR", 1, "REVIEWER", 2, "ADMIN", 3, "PLATFORM_ADMIN", 4);
-
     private void checkPermission(ActionContext ctx) {
         if (meta().permissions().isEmpty()) {
             return;
         }
-        int roleLevel = ROLE_LEVEL.getOrDefault(ctx.role(), 0);
+        int roleLevel = Roles.ROLE_LEVEL.getOrDefault(ctx.role(), 0);
         for (String perm : meta().permissions()) {
-            int need = ROLE_LEVEL.getOrDefault(mapPermission(perm), 4);
+            int need = Roles.ROLE_LEVEL.getOrDefault(mapPermission(perm), 4);
             if (roleLevel >= need) {
                 return;
             }
@@ -148,9 +148,6 @@ public abstract class AbstractAction implements Action {
 
     /** 日志长文本截断（防敏感/膨胀）。 */
     private static String truncate(String s, int limit) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= limit ? s : s.substring(0, limit) + "…";
+        return Texts.truncate(s, limit);
     }
 }

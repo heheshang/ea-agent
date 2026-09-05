@@ -1,6 +1,7 @@
 package com.eaagent.agent.engine;
 
 import com.eaagent.common.JsonUtils;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.AgentToolCallMapper;
 import com.eaagent.ontology.model.AgentToolCallEntity;
 import io.agentscope.core.agent.Agent;
@@ -106,7 +107,7 @@ public class RunStatsMiddleware implements MiddlewareBase {
     public void recordKb(String query, int hits, long durationMs) {
         Map<String, Object> m = new HashMap<>();
         m.put("name", "knowledge_search");
-        m.put("params", truncate(query, PARAMS_LIMIT));
+        m.put("params", Texts.truncate(query, PARAMS_LIMIT));
         m.put("duration_ms", durationMs);
         m.put("ok", hits > 0);
         m.put("error", hits > 0 ? null : "no_hit");
@@ -159,7 +160,7 @@ public class RunStatsMiddleware implements MiddlewareBase {
                 log.debug("tool start session={} toolCallId={} name={} params={}",
                         sessionId, s.getToolCallId(),
                         b == null ? "?" : b.getName(),
-                        truncate(serializeParams(b == null ? null : b.getInput()), 200));
+                        Texts.truncate(serializeParams(b == null ? null : b.getInput()), 200));
             } else if (ev instanceof ToolResultEndEvent e) {
                 ToolUseBlock block = actingCalls.remove(e.getToolCallId());
                 Long t0 = actingStartNanos.remove(e.getToolCallId());
@@ -167,13 +168,13 @@ public class RunStatsMiddleware implements MiddlewareBase {
                 boolean ok = e.getState() == ToolResultState.SUCCESS;
                 log.debug("tool end session={} toolCallId={} name={} durationMs={} ok={} error={}",
                         sessionId, e.getToolCallId(), block == null ? "?" : block.getName(),
-                        durationMs, ok, ok ? "" : truncate(e.getState().name(), 200));
+                        durationMs, ok, ok ? "" : Texts.truncate(e.getState().name(), 200));
                 if (block == null || toolCalls.size() >= TOOL_CALLS_LIMIT) {
                     return;
                 }
                 Map<String, Object> m = new HashMap<>();
                 m.put("name", block.getName());
-                m.put("params", truncate(serializeParams(block.getInput()), PARAMS_LIMIT));
+                m.put("params", Texts.truncate(serializeParams(block.getInput()), PARAMS_LIMIT));
                 m.put("duration_ms", t0 == null ? null : durationMs);
                 m.put("ok", ok);
                 m.put("error", ok ? null : e.getState().name());
@@ -279,43 +280,7 @@ public class RunStatsMiddleware implements MiddlewareBase {
             return null;
         }
         String key = "applyAction".equals(toolName) ? "action" : "name";
-        if (input instanceof Map<?, ?>) {
-            Object v = ((Map<?, ?>) input).get(key);
-            return v == null ? null : String.valueOf(v);
-        }
-        String s = String.valueOf(input).trim();
-        if (s.isEmpty()) {
-            return null;
-        }
-        try {
-            Map<String, Object> map = JsonUtils.readMap(s);
-            Object v = map.get(key);
-            if (v != null) {
-                return String.valueOf(v);
-            }
-        } catch (Exception ignored) {
-            // 非 JSON（Java map toString），走下方正则
-        }
-        int i = s.indexOf(key + "=");
-        if (i >= 0) {
-            String rest = s.substring(i + key.length() + 1).trim();
-            int j = rest.indexOf(',');
-            if (j > 0) {
-                return rest.substring(0, j).trim();
-            }
-            j = rest.indexOf('}');
-            if (j > 0) {
-                return rest.substring(0, j).trim();
-            }
-        }
-        return null;
-    }
-
-    private static String truncate(String s, int limit) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= limit ? s : s.substring(0, limit) + "…";
+        return Texts.firstValue(input, key);
     }
 
     private record UsageAcc(int inputTokens, int outputTokens, int cachedTokens, long modelMs) {

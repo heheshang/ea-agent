@@ -81,7 +81,7 @@ public class EventService {
             CustomerEntity created = new CustomerEntity();
             created.setTenantId(tenantId);
             created.setExternalId(customerExternalId);
-            created.setStatus("ACTIVE");
+            created.setStatus(CustomerEntity.STATUS_ACTIVE);
             created.setCreatedAt(Instant.now());
             created.setUpdatedAt(Instant.now());
             customerMapper.insert(created);

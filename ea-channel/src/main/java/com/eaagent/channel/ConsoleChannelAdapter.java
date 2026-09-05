@@ -54,7 +54,7 @@ public class ConsoleChannelAdapter implements ChannelAdapter {
         if (d == null) {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
         }
-        d.setStatus("SENT");
+        d.setStatus(DeliveryEntity.STATUS_SENT);
         d.setChannelMsgId(String.valueOf(message.deliveryId()));
         d.setError(null);
         d.setAttempt((d.getAttempt() == null ? 0 : d.getAttempt()) + 1);

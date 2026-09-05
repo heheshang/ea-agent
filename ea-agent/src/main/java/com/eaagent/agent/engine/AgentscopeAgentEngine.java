@@ -4,6 +4,7 @@ import com.eaagent.agent.event.EngineEvent;
 import com.eaagent.agent.mcp.McpClientRegistry;
 import com.eaagent.agent.service.KnowledgeBaseService;
 import com.eaagent.agent.tool.AgentToolRegistry;
+import com.eaagent.common.Texts;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.eaagent.ontology.mapper.AgentRunMapper;
@@ -201,7 +202,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
                 .select(AgentRunEntity.COL_ID, AgentRunEntity.COL_GOAL, AgentRunEntity.COL_STATUS, AgentRunEntity.COL_SUMMARY)
                 .eq(AgentRunEntity.COL_TENANT_ID, rc.tenantId())
                 .eq(AgentRunEntity.COL_SESSION_ID, rc.sessionId())
-                .ne(AgentRunEntity.COL_STATUS, "NEW")
+                .ne(AgentRunEntity.COL_STATUS, AgentRunEntity.STATUS_NEW)
                 .ne(AgentRunEntity.COL_ID, Long.valueOf(rc.runId()))
                 .orderByDesc(AgentRunEntity.COL_ID)
                 .last("LIMIT " + MEMORY_ROUNDS));
@@ -211,15 +212,11 @@ public class AgentscopeAgentEngine implements AgentEngine {
             StringBuilder sb = new StringBuilder("【会话回顾】以下是你在本会话中此前的交互记录（目标、结果摘要与状态，时间正序）：\n");
             for (AgentRunEntity r : history) {
                 String goal = r.getGoal() == null ? "" : r.getGoal();
-                if (goal.length() > MEMORY_GOAL_LIMIT) {
-                    goal = goal.substring(0, MEMORY_GOAL_LIMIT) + "…";
-                }
+                goal = Texts.truncate(goal, MEMORY_GOAL_LIMIT);
                 sb.append("- [").append(r.getStatus()).append("] 目标：").append(goal);
                 String summary = r.getSummary();
                 if (summary != null && !summary.isBlank()) {
-                    if (summary.length() > MEMORY_SUMMARY_LIMIT) {
-                        summary = summary.substring(0, MEMORY_SUMMARY_LIMIT) + "…";
-                    }
+                    summary = Texts.truncate(summary, MEMORY_SUMMARY_LIMIT);
                     sb.append("\n  结果：").append(summary);
                 }
                 sb.append('\n');
@@ -339,9 +336,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
             return;
         }
         String s = reply.toString().trim();
-        if (s.length() > SUMMARY_STORE_LIMIT) {
-            s = s.substring(0, SUMMARY_STORE_LIMIT) + "…";
-        }
+        s = Texts.truncate(s, SUMMARY_STORE_LIMIT);
         runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                 .eq(AgentRunEntity.COL_ID, Long.valueOf(rc.runId()))
                 .set(AgentRunEntity.COL_SUMMARY, s));

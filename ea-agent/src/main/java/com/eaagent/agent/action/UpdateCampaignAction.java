@@ -2,6 +2,7 @@ package com.eaagent.agent.action;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.BizException;
+import com.eaagent.common.Channels;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
 import com.eaagent.common.TriggerRuleCodec;
@@ -29,8 +30,8 @@ import java.util.Set;
 @Component
 public class UpdateCampaignAction extends AbstractAction {
 
-    private static final Set<String> CHANNELS = Set.of("sms", "email", "wechat", "push", "console");
-    private static final Set<String> AB_MODES = Set.of("NONE", "AB");
+    private static final Set<String> CHANNELS = Channels.ALL_SET;
+    private static final Set<String> AB_MODES = Set.of(CampaignEntity.AB_MODE_NONE, CampaignEntity.AB_MODE_AB);
 
     private final CampaignMapper campaignMapper;
     private final TemplateRoutingService templateRoutingService;
@@ -156,7 +157,7 @@ public class UpdateCampaignAction extends AbstractAction {
         String effMode = (abMode != null && !abMode.isBlank()) ? abMode : c.getAbMode();
         Integer effSplit = c.getAbSplit();
         List<Map<String, Object>> effVariants = c.getAbVariants();
-        if ("AB".equals(effMode) && (effSplit == null || effSplit < 1 || effSplit > 99
+        if (CampaignEntity.AB_MODE_AB.equals(effMode) && (effSplit == null || effSplit < 1 || effSplit > 99
                 || effVariants == null || effVariants.isEmpty() || effVariants.size() > 3)) {
             throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
                     "AB 模式需配置 ab_split(1-99) 与 1-3 个 ab_variants");

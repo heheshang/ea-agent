@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.Roles;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
 import com.eaagent.ontology.model.CustomerEntity;
@@ -34,7 +35,7 @@ public class UpdateCustomerStateAction extends AbstractAction {
                 .name("updateCustomerState")
                 .description("更新客户状态与画像")
                 .requiredArgs(List.of("customer_id"))
-                .permissions(List.of("OPERATOR"))
+                .permissions(List.of(Roles.OPERATOR))
                 .build();
     }
 

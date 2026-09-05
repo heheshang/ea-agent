@@ -23,6 +23,12 @@ public class TemplateEntity {
     public static final String COL_REVIEW_STATUS = "review_status";
     public static final String COL_CREATED_AT = "created_at";
 
+    /** review_status 值（DRAFT|PENDING|APPROVED|REJECTED）。 */
+    public static final String REVIEW_DRAFT = "DRAFT";
+    public static final String REVIEW_PENDING = "PENDING";
+    public static final String REVIEW_APPROVED = "APPROVED";
+    public static final String REVIEW_REJECTED = "REJECTED";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long tenantId;

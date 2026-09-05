@@ -1,5 +1,6 @@
 package com.eaagent.agent.bus;
 
+import com.eaagent.common.Actors;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.common.TenantContext;
 import com.eaagent.ontology.action.ActionContext;
@@ -84,18 +85,18 @@ public class EventConsumer {
         Long tenantId = Long.valueOf(String.valueOf(f.get("tenant_id")));
         String eventType = String.valueOf(f.get("event_type"));
         try {
-            TenantContext.setIdentity(tenantId, null, "SYSTEM");
+            TenantContext.setIdentity(tenantId, null, Actors.SYSTEM);
             List<CampaignEntity> campaigns = campaignMapper.selectList(
                     new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<CampaignEntity>()
                             .eq(CampaignEntity.COL_TENANT_ID, tenantId)
-                            .eq(CampaignEntity.COL_STATUS, "RUNNING"));
+                            .eq(CampaignEntity.COL_STATUS, CampaignEntity.STATUS_RUNNING));
             int matched = 0;
             for (CampaignEntity c : campaigns) {
                 Map<String, Object> rule = c.getTriggerRule() == null ? Map.of() : c.getTriggerRule();
                 if (eventType.equals(rule.get("event_type"))) {
                     matched++;
                     String cooldown = String.valueOf(rule.getOrDefault("cooldown", "PT1H"));
-                    ActionContext ctx = ActionContext.of(tenantId, null, "SYSTEM", "evt:" + recordId);
+                    ActionContext ctx = ActionContext.of(tenantId, null, Actors.SYSTEM, "evt:" + recordId);
                     Map<String, Object> payload = toStringKeyMap(f);
                     String nested = payload.get("event_payload") == null ? null : String.valueOf(payload.get("event_payload"));
                     if (nested != null && !nested.isBlank()) {
@@ -127,10 +128,7 @@ public class EventConsumer {
 
     private void toDlq(Map<Object, Object> f, String error) {
         try {
-            Map<String, String> m = new LinkedHashMap<>();
-            for (Map.Entry<Object, Object> en : f.entrySet()) {
-                m.put(String.valueOf(en.getKey()), String.valueOf(en.getValue()));
-            }
+            Map<String, Object> m = new LinkedHashMap<>(toStringKeyMap(f));
             m.put("error", error.length() > 500 ? error.substring(0, 500) : error);
             redis.opsForStream().add(
                     org.springframework.data.redis.connection.stream.StreamRecords.newRecord()

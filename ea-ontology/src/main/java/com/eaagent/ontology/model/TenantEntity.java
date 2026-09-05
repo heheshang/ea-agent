@@ -22,6 +22,9 @@ public class TenantEntity {
     public static final String COL_QUOTA = "quota";
     public static final String COL_CREATED_AT = "created_at";
 
+    /** status 值（ACTIVE|DISABLED）。 */
+    public static final String STATUS_ACTIVE = "ACTIVE";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private String name;

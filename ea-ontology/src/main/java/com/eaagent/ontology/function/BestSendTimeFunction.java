@@ -84,7 +84,7 @@ public class BestSendTimeFunction implements Function {
         List<DeliveryEntity> sent = deliveryMapper.selectList(new QueryWrapper<DeliveryEntity>()
                 .eq(DeliveryEntity.COL_TENANT_ID, tenantId)
                 .eq(DeliveryEntity.COL_CUSTOMER_ID, cid)
-                .eq(DeliveryEntity.COL_STATUS, "SENT")
+                .eq(DeliveryEntity.COL_STATUS, DeliveryEntity.STATUS_SENT)
                 .ge(DeliveryEntity.COL_CREATED_AT, since));
 
         double[] score = new double[24];

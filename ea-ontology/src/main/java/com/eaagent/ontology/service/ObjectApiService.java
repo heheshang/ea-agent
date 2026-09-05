@@ -9,7 +9,9 @@ import com.eaagent.common.JsonUtils;
 import com.eaagent.common.MaskUtils;
 import com.eaagent.common.PageResult;
 import com.eaagent.common.PageToken;
+import com.eaagent.common.Roles;
 import com.eaagent.common.TenantContext;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.ChannelConfigMapper;
@@ -47,7 +49,6 @@ public class ObjectApiService {
 
     /** 动态安全受控类型：非 owner 访问需 REVIEWER/ADMIN。 */
     public static final Set<String> OWNERSHIP_TYPES = Set.of("audience", "campaign");
-    private static final Set<String> ADMIN_ROLES = Set.of("REVIEWER", "ADMIN", "PLATFORM_ADMIN");
 
     private final RuleEngine ruleEngine;
     private final CustomerMapper customerMapper;
@@ -238,7 +239,7 @@ public class ObjectApiService {
 
     @SuppressWarnings("rawtypes")
     private void applyDynamicSecurityFilter(ObjectTypeDef def, QueryWrapper w) {
-        if (!OWNERSHIP_TYPES.contains(def.name()) || ADMIN_ROLES.contains(TenantContext.role())) {
+        if (!OWNERSHIP_TYPES.contains(def.name()) || Roles.ADMIN_ROLES.contains(TenantContext.role())) {
             return;
         }
         Long userId = TenantContext.userId();
@@ -254,7 +255,7 @@ public class ObjectApiService {
     }
 
     private void checkDynamicSecurity(ObjectTypeDef def, Long id, long tenantId) {
-        if (!OWNERSHIP_TYPES.contains(def.name()) || ADMIN_ROLES.contains(TenantContext.role())) {
+        if (!OWNERSHIP_TYPES.contains(def.name()) || Roles.ADMIN_ROLES.contains(TenantContext.role())) {
             return;
         }
         Map<String, Object> row = JsonUtils.toMap(lookup(def, id, tenantId));
@@ -289,7 +290,7 @@ public class ObjectApiService {
         if (!def.isQueryable(field)) {
             throw new BizException(ErrorCode.DSL_PARSE_ERROR);
         }
-        String column = RuleEngine.toSnake(field);
+        String column = Texts.toSnake(field);
         w.orderBy(true, !sort.startsWith("-"), column);
     }
 
@@ -300,7 +301,7 @@ public class ObjectApiService {
             if (!details && !f.queryable()) {
                 continue;
             }
-            Object v = src.get(RuleEngine.toCamel(f.name()));
+            Object v = src.get(Texts.toCamel(f.name()));
             if (v == null) {
                 continue;
             }
@@ -320,16 +321,7 @@ public class ObjectApiService {
     }
 
     private BaseMapper<?> mapperFor(String type) {
-        return switch (TypeRegistry.get(type).entityCls().getSimpleName()) {
-            case "CustomerEntity" -> customerMapper;
-            case "AudienceEntity" -> audienceMapper;
-            case "CampaignEntity" -> campaignMapper;
-            case "TemplateEntity" -> templateMapper;
-            case "ChannelConfigEntity" -> channelConfigMapper;
-            case "DeliveryEntity" -> deliveryMapper;
-            case "EventEntity" -> eventMapper;
-            default -> throw new BizException(ErrorCode.TYPE_UNKNOWN);
-        };
+        return mapperForEntity(TypeRegistry.get(type).entityCls());
     }
 
     private BaseMapper<?> mapperForEntity(Class<?> cls) {

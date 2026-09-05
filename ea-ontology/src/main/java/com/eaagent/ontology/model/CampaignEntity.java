@@ -33,6 +33,18 @@ public class CampaignEntity {
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
 
+    /** status 值（DRAFT|SCHEDULED|RUNNING|PAUSED|FINISHED|FAILED）。 */
+    public static final String STATUS_DRAFT = "DRAFT";
+    public static final String STATUS_SCHEDULED = "SCHEDULED";
+    public static final String STATUS_RUNNING = "RUNNING";
+    public static final String STATUS_PAUSED = "PAUSED";
+    public static final String STATUS_FINISHED = "FINISHED";
+    public static final String STATUS_FAILED = "FAILED";
+
+    /** ab_mode 值（NONE|AB）。 */
+    public static final String AB_MODE_NONE = "NONE";
+    public static final String AB_MODE_AB = "AB";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long tenantId;

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.JsonUtils;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.EventEntity;
 import com.eaagent.ontology.type.FieldDef;
@@ -433,29 +434,11 @@ public final class RuleEngine {
     }
 
     public static String toSnake(String camel) {
-        StringBuilder sb = new StringBuilder();
-        for (char c : camel.toCharArray()) {
-            if (Character.isUpperCase(c)) {
-                sb.append('_').append(Character.toLowerCase(c));
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        return Texts.toSnake(camel);
     }
 
     /** snake_case → camelCase（投影键还原：实体 Jackson 序列化键为 camel）。 */
     public static String toCamel(String snake) {
-        StringBuilder sb = new StringBuilder();
-        boolean up = false;
-        for (char c : snake.toCharArray()) {
-            if (c == '_') {
-                up = true;
-                continue;
-            }
-            sb.append(up ? Character.toUpperCase(c) : c);
-            up = false;
-        }
-        return sb.toString();
+        return Texts.toCamel(snake);
     }
 }

@@ -7,6 +7,7 @@ import com.eaagent.channel.DeliveryMessage;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.Texts;
 import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.action.AbstractAction;
 import com.eaagent.ontology.action.ActionContext;
@@ -32,8 +33,6 @@ import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -142,7 +141,7 @@ public class SendTouchAction extends AbstractAction {
                 continue;
             }
             String abGroup = null;
-            if ("AB".equals(campaign.getAbMode())) {
+            if (CampaignEntity.AB_MODE_AB.equals(campaign.getAbMode())) {
                 int split = campaign.getAbSplit() == null ? 0 : campaign.getAbSplit();
                 int variantIdx = abBucketer.variant(bucket, campaign.getAbVariants(), split);
                 abGroup = variantIdx < 0 ? "CONTROL"
@@ -159,7 +158,7 @@ public class SendTouchAction extends AbstractAction {
             d.setTemplateId(tpl.getId());
             d.setGrayHit(grayHit);
             d.setAbGroup(abGroup);
-            d.setStatus("PENDING");
+            d.setStatus(DeliveryEntity.STATUS_PENDING);
             d.setAttempt(0);
             d.setCreatedAt(Instant.now());
             d.setUpdatedAt(Instant.now());
@@ -173,7 +172,7 @@ public class SendTouchAction extends AbstractAction {
                 sent++;
             } catch (Exception e) {
                 failed++;
-                d.setStatus("FAILED");
+                d.setStatus(DeliveryEntity.STATUS_FAILED);
                 d.setError(String.valueOf(e.getMessage()).substring(0, Math.min(200, String.valueOf(e.getMessage()).length())));
                 d.setUpdatedAt(Instant.now());
                 deliveryMapper.updateById(d);
@@ -194,14 +193,12 @@ public class SendTouchAction extends AbstractAction {
     private boolean isUnsubscribed(Long tenantId, CustomerEntity c, String channel) {
         String contact = c.getPhone() != null && !c.getPhone().isBlank()
                 ? c.getPhone() : c.getEmail();
-        if (contact == null || contact.isBlank() || c.getWechatOpenid() == null) {
-            // 无联系方式/仅 openid：跳过（避免静默漏发，计入未退订项）
-        }
         if (contact == null || contact.isBlank()) {
+            // 无联系方式：未命中退订表按未退订处理（是否可发由通道能力决定），避免静默漏发统计失真
             return false;
         }
         UnsubscribeEntity u = unsubscribeMapper.selectOne(new QueryWrapper<UnsubscribeEntity>()
-                .eq(UnsubscribeEntity.COL_CUSTOMER_KEY, sha256Hex(contact)).eq(UnsubscribeEntity.COL_CHANNEL, channel).last("LIMIT 1"));
+                .eq(UnsubscribeEntity.COL_CUSTOMER_KEY, Texts.sha256Hex(contact)).eq(UnsubscribeEntity.COL_CHANNEL, channel).last("LIMIT 1"));
         return u != null;
     }
 
@@ -250,16 +247,4 @@ public class SendTouchAction extends AbstractAction {
         return out;
     }
 
-    static String sha256Hex(String s) {
-        try {
-            byte[] d = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : d) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
     }
-}

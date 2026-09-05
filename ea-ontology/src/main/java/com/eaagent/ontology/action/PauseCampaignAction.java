@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.Roles;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.model.CampaignEntity;
@@ -33,7 +34,7 @@ public class PauseCampaignAction extends AbstractAction {
                 .name("pauseCampaign")
                 .description("暂停任务")
                 .requiredArgs(List.of("campaign_id"))
-                .permissions(List.of("REVIEWER"))
+                .permissions(List.of(Roles.REVIEWER))
                 .build();
     }
 
@@ -44,13 +45,13 @@ public class PauseCampaignAction extends AbstractAction {
         if (c == null) {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
         }
-        if ("PAUSED".equals(c.getStatus())) {
+        if (CampaignEntity.STATUS_PAUSED.equals(c.getStatus())) {
             Map<String, Object> out = new HashMap<>();
             out.put("campaign_id", c.getId());
             out.put("status", c.getStatus());
             return out;
         }
-        c.setStatus("PAUSED");
+        c.setStatus(CampaignEntity.STATUS_PAUSED);
         c.setUpdatedAt(Instant.now());
         campaignMapper.updateById(c);
         Map<String, Object> out = new HashMap<>();

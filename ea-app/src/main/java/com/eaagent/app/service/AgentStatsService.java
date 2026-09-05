@@ -2,6 +2,7 @@ package com.eaagent.app.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.JsonUtils;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.mapper.AgentToolCallMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
@@ -71,9 +72,9 @@ public class AgentStatsService {
         for (AgentRunEntity r : runs) {
             String status = r.getStatus() == null ? "UNKNOWN" : r.getStatus();
             statusDist.merge(status, 1L, Long::sum);
-            if ("COMPLETED".equals(status)) {
+            if (AgentRunEntity.STATUS_COMPLETED.equals(status)) {
                 success++;
-            } else if ("FAILED".equals(status)) {
+            } else if (AgentRunEntity.STATUS_FAILED.equals(status)) {
                 failed++;
             }
             double duration = r.getCreatedAt() != null && r.getUpdatedAt() != null
@@ -82,7 +83,7 @@ public class AgentStatsService {
             durationSum += duration;
             slowCandidates.add(Map.of(
                     "id", r.getId(),
-                    "goal", trim(r.getGoal(), 60),
+                    "goal", Texts.truncate(r.getGoal(), 60),
                     "status", status,
                     "duration_s", round1(duration),
                     "cost", r.getCost() == null ? 0.0 : r.getCost().doubleValue()));
@@ -278,7 +279,7 @@ public class AgentStatsService {
             for (Map<String, Object> tc : tcs) {
                 String name = str(tc.get("name"), "unknown");
                 if ("applyAction".equals(name)) {
-                    String actName = parseAction(tc.get("params"));
+                    String actName = Texts.firstValue(tc.get("params"), "action");
                     // 未解析出动作名或不在 ActionRegistry（LLM 幻觉动作名）→ 不入图，保证计数守恒
                     if (actName == null || !actionToObject.containsKey(actName)) {
                         continue;
@@ -287,7 +288,7 @@ public class AgentStatsService {
                     accumulate(toolAggs.computeIfAbsent(name, ToolAgg::new), tc);
                     accumulate(actionAggs.computeIfAbsent(actName, ToolAgg::new), tc);
                 } else if ("callFunction".equals(name)) {
-                    String fnName = parseFunction(tc.get("params"));
+                    String fnName = Texts.firstValue(tc.get("params"), "name");
                     if (fnName == null || !functionToObject.containsKey(fnName)) {
                         continue;
                     }
@@ -469,72 +470,6 @@ public class AgentStatsService {
         }
     }
 
-    /** 从 applyAction 调用参数中解析动作名（兼容 JSON 与 Java map toString 两种形态）。 */
-    private static String parseAction(Object params) {
-        if (params == null) {
-            return null;
-        }
-        String s = String.valueOf(params).trim();
-        if (s.isEmpty()) {
-            return null;
-        }
-        try {
-            Map<String, Object> m = JsonUtils.readMap(s);
-            Object a = m.get("action");
-            if (a != null) {
-                return String.valueOf(a);
-            }
-        } catch (Exception ignored) {
-            // 非 JSON（Java map toString），走下方正则
-        }
-        int i = s.indexOf("action=");
-        if (i >= 0) {
-            String rest = s.substring(i + "action=".length()).trim();
-            int j = rest.indexOf(',');
-            if (j > 0) {
-                return rest.substring(0, j).trim();
-            }
-            j = rest.indexOf('}');
-            if (j > 0) {
-                return rest.substring(0, j).trim();
-            }
-        }
-        return null;
-    }
-
-    /** 从 callFunction 调用参数中解析函数名（兼容 JSON 与 Java map toString 两种形态）。 */
-    private static String parseFunction(Object params) {
-        if (params == null) {
-            return null;
-        }
-        String s = String.valueOf(params).trim();
-        if (s.isEmpty()) {
-            return null;
-        }
-        try {
-            Map<String, Object> m = JsonUtils.readMap(s);
-            Object n = m.get("name");
-            if (n != null) {
-                return String.valueOf(n);
-            }
-        } catch (Exception ignored) {
-            // 非 JSON（Java map toString），走下方正则
-        }
-        int i = s.indexOf("name=");
-        if (i >= 0) {
-            String rest = s.substring(i + "name=".length()).trim();
-            int j = rest.indexOf(',');
-            if (j > 0) {
-                return rest.substring(0, j).trim();
-            }
-            j = rest.indexOf('}');
-            if (j > 0) {
-                return rest.substring(0, j).trim();
-            }
-        }
-        return null;
-    }
-
     private static double percentile(List<Double> sorted, double q) {
         sorted.sort(Double::compareTo);
         int idx = (int) Math.ceil(q * sorted.size()) - 1;
@@ -547,13 +482,6 @@ public class AgentStatsService {
 
     private static String str(Object o, String def) {
         return o == null ? def : String.valueOf(o);
-    }
-
-    private static String trim(String s, int limit) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= limit ? s : s.substring(0, limit) + "…";
     }
 
     private static double round1(double v) {

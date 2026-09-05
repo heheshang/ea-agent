@@ -1,6 +1,7 @@
 package com.eaagent.ontology.action;
 
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.Roles;
 import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
@@ -38,7 +39,7 @@ public class CreateCampaignAction extends AbstractAction {
                 .name("createCampaign")
                 .description("创建触达任务（灰度/AB/触发规则一次成型；trigger_rule 必填：含 event_type，可按需附 window/cooldown）")
                 .requiredArgs(List.of("name", "audience_id", "channel", "template_id"))
-                .permissions(List.of("OPERATOR"))
+                .permissions(List.of(Roles.OPERATOR))
                 .build();
     }
 
@@ -54,7 +55,7 @@ public class CreateCampaignAction extends AbstractAction {
         c.setCron(req.getString("cron"));
         c.setGrayRatio(req.getInt("gray_ratio") == null ? 100 : req.getInt("gray_ratio"));
         String abMode = req.getString("ab_mode");
-        c.setAbMode(abMode == null ? "NONE" : abMode);
+        c.setAbMode(abMode == null ? CampaignEntity.AB_MODE_NONE : abMode);
         c.setAbSplit(req.getInt("ab_split"));
         c.setAbVariants(req.getList("ab_variants"));
         List<Map<String, Object>> routing = req.getList("template_routing");
@@ -62,7 +63,7 @@ public class CreateCampaignAction extends AbstractAction {
         c.setTemplateRouting(routing);
         c.setTriggerRule(TriggerRuleCodec.normalize(req.getMap("trigger_rule")));
         c.setOwnerId(ctx.userId());
-        c.setStatus("DRAFT");
+        c.setStatus(CampaignEntity.STATUS_DRAFT);
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         campaignMapper.insert(c);

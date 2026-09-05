@@ -6,6 +6,7 @@ import com.eaagent.api.dto.KnowledgeWriteRequest;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.PageResult;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.mapper.KnowledgeMapper;
 import com.eaagent.ontology.model.KnowledgeEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -414,7 +415,7 @@ public class KnowledgeBaseService {
     }
 
     private static String truncate(String s, int max) {
-        return s == null || s.length() <= max ? s : s.substring(0, max) + "…";
+        return Texts.truncate(s, max);
     }
 
     /** 检索命中：条目 + 相似度得分（0..1）。 */

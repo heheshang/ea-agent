@@ -1,6 +1,7 @@
 package com.eaagent.agent.tool;
 
 import com.eaagent.common.JsonUtils;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionRegistry;
 import com.eaagent.ontology.action.ActionResult;
@@ -135,7 +136,7 @@ public class AgentToolRegistry {
                 return Mono.just(new ToolResultBlock(id, name, List.of(TextBlock.builder().text(JsonUtils.write(out)).build())));
             } catch (Exception e) {
                 log.warn("tool exec tenantId={} name={} params={} ok=false error={} durationMs={}",
-                        tenantId, name, params, truncate(String.valueOf(e.getMessage()), 150),
+                        tenantId, name, params, Texts.truncate(String.valueOf(e.getMessage()), 150),
                         (System.nanoTime() - t0) / 1_000_000L);
                 return Mono.just(new ToolResultBlock(id, name,
                         List.of(TextBlock.builder().text("{\"error\":\"" + String.valueOf(e.getMessage()).replace("\"", "'") + "\"}").build())));
@@ -146,18 +147,10 @@ public class AgentToolRegistry {
     /** 工具入参序列化：Map → JSON，失败回退 toString；日志截断 150 防敏感/膨胀。 */
     private static String paramsToLog(Object input) {
         try {
-            return truncate(JsonUtils.write(input), 150);
+            return Texts.truncate(JsonUtils.write(input), 150);
         } catch (Exception e) {
-            return truncate(String.valueOf(input), 150);
+            return Texts.truncate(String.valueOf(input), 150);
         }
-    }
-
-    /** 日志长文本截断（防敏感/膨胀）。 */
-    private static String truncate(String s, int limit) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= limit ? s : s.substring(0, limit) + "…";
     }
 
     private static Map<String, Object> schema(Map<String, Object> properties, List<String> required) {
@@ -207,16 +200,9 @@ public class AgentToolRegistry {
             w.last("LIMIT " + Math.max(1, Math.min(limit, 100)));
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> raw = (List<Map<String, Object>>) (List<?>) customerMapper.selectMaps(w);
-            List<Map<String, Object>> rows = raw.stream().map(AgentToolRegistry.this::trim).toList();
+            List<Map<String, Object>> rows = raw;
             return Map.of("rows", rows, "count", rows.size());
         }
-    }
-
-    private Map<String, Object> trim(Map<String, Object> row) {
-        Map<String, Object> m = new HashMap<>(row);
-        m.remove("id");
-        m.put("id", row.get("id"));
-        return m;
     }
 
     /** queryAudience：audience 详情 + 成员数。 */
@@ -384,7 +370,7 @@ public class AgentToolRegistry {
         for (Map.Entry<String, Object> en : args.entrySet()) {
             String k = en.getKey();
             if (k.matches(".*[A-Z].*")) {
-                String snake = toSnake(k);
+                String snake = Texts.toSnake(k);
                 if (!out.containsKey(snake)) {
                     out.put(snake, en.getValue());
                 }
@@ -421,18 +407,5 @@ public class AgentToolRegistry {
             return "trigger_rule 必须含 event_type（如 \"order_placed\"），不能为空；用户未指定时先询问触发条件";
         }
         return null;
-    }
-
-    private static String toSnake(String k) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < k.length(); i++) {
-            char c = k.charAt(i);
-            if (Character.isUpperCase(c)) {
-                sb.append('_').append(Character.toLowerCase(c));
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
     }
 }

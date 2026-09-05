@@ -21,6 +21,9 @@ public class AudienceEntity {
     public static final String COL_STATUS = "status";
     public static final String COL_CREATED_AT = "created_at";
 
+    /** status 值（ACTIVE）。 */
+    public static final String STATUS_ACTIVE = "ACTIVE";
+
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long tenantId;

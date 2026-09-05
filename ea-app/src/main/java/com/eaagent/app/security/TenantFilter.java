@@ -56,7 +56,7 @@ public class TenantFilter extends OncePerRequestFilter {
         }
 
         TenantEntity tenant = tenantMapper.selectById(tenantId);
-        if (tenant == null || !"ACTIVE".equals(tenant.getStatus())) {
+        if (tenant == null || !TenantEntity.STATUS_ACTIVE.equals(tenant.getStatus())) {
             reject(response, ErrorCode.TENANT_DISABLED, "tenant disabled or not found");
             return;
         }

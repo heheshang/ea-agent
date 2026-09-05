@@ -170,7 +170,7 @@ public class TemplateRoutingService {
         if (t == null) {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND, "模板不存在: " + templateId);
         }
-        if (!"APPROVED".equals(t.getReviewStatus())) {
+        if (!TemplateEntity.REVIEW_APPROVED.equals(t.getReviewStatus())) {
             throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
                     "模板未通过审核（review_status=" + t.getReviewStatus() + "）: " + templateId);
         }

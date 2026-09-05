@@ -55,8 +55,8 @@ public class AgentRunWatchdog {
         try {
             stale = runMapper.selectList(new QueryWrapper<AgentRunEntity>()
                     .in(AgentRunEntity.COL_STATUS,
-                            AgentService.ST_NEW, AgentService.ST_PLANNING,
-                            AgentService.ST_EXECUTING, AgentService.ST_OBSERVING)
+                            AgentRunEntity.STATUS_NEW, AgentRunEntity.STATUS_PLANNING,
+                            AgentRunEntity.STATUS_EXECUTING, AgentRunEntity.STATUS_OBSERVING)
                     .lt(AgentRunEntity.COL_UPDATED_AT, cutoff)
                     .last("LIMIT 100"));
         } catch (Exception e) {
@@ -67,8 +67,8 @@ public class AgentRunWatchdog {
             return;
         }
         for (AgentRunEntity run : stale) {
-            boolean neverStarted = AgentService.ST_NEW.equals(run.getStatus());
-            String target = neverStarted ? AgentService.ST_CANCELLED : AgentService.ST_FAILED;
+            boolean neverStarted = AgentRunEntity.STATUS_NEW.equals(run.getStatus());
+            String target = neverStarted ? AgentRunEntity.STATUS_CANCELLED : AgentRunEntity.STATUS_FAILED;
             try {
                 runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                         .eq(AgentRunEntity.COL_ID, run.getId())
