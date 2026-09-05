@@ -25,6 +25,7 @@ function logout() {
         <el-menu-item index="/campaigns">🚀 运营活动</el-menu-item>
         <el-menu-item index="/stats">📊 统计看板</el-menu-item>
         <el-menu-item index="/retention">📈 存留看板</el-menu-item>
+        <el-menu-item index="/knowledge">📚 知识库</el-menu-item>
         <el-menu-item index="/ontology">🧭 Ontology 链路</el-menu-item>
       </el-menu>
     </el-aside>

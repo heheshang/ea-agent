@@ -91,6 +91,9 @@ ea:
     # 以 JSON 数组整体覆盖（如 [{"name":"demo","transport":"stdio","command":"python3",...}]）。
     mcp:
       servers: ${EA_AGENTSCOPE_MCP_SERVERS:[]}
+  knowledge:
+    # 对话每轮注入的知识库条目数上限（检索打分见 KnowledgeBaseService，无命中不注入）
+    top-k: 3
   seed:
     enabled: ${EA_SEED:true}
 

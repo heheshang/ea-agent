@@ -56,3 +56,8 @@ export async function put<T>(url: string, body?: unknown, config?: AxiosRequestC
   const resp = await http.put<Result<T>>(url, body, config)
   return resp.data.data
 }
+
+export async function del<T>(url: string): Promise<T> {
+  const resp = await http.delete<Result<T>>(url)
+  return resp.data.data
+}

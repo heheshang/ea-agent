@@ -52,6 +52,8 @@ public class RunStatsMiddleware implements MiddlewareBase {
     private int toolSeq = 0;
     /** 当前 run 的会话回顾注入条数（引擎 begin 时写入，落 prompt_info）。 */
     private int reviewCount = 0;
+    /** 当前 run 的知识库注入条数（引擎 begin 时写入，落 prompt_info）。 */
+    private int kbHits = 0;
 
     // onActing 计时/匹配表：以 toolCallId 关联 Start 与 End
     private final Map<String, Long> actingStartNanos = new HashMap<>();
@@ -63,8 +65,9 @@ public class RunStatsMiddleware implements MiddlewareBase {
     }
 
     /** 新一轮开始：清空上一轮累积（串行执行，否则同 session 并发会串数据）。 */
-    public void begin(int reviewCount) {
+    public void begin(int reviewCount, int kbHits) {
         this.reviewCount = reviewCount;
+        this.kbHits = kbHits;
         toolSeq = 0;
         usages.clear();
         toolCalls.clear();
@@ -74,6 +77,10 @@ public class RunStatsMiddleware implements MiddlewareBase {
 
     public int reviewCount() {
         return reviewCount;
+    }
+
+    public int kbHits() {
+        return kbHits;
     }
 
     @Override

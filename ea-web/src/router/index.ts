@@ -14,6 +14,7 @@ const router = createRouter({
         { path: 'campaigns', name: 'campaigns', component: () => import('../views/CampaignsView.vue') },
         { path: 'stats', name: 'stats', component: () => import('../views/StatsView.vue') },
         { path: 'retention', name: 'retention', component: () => import('../views/RetentionView.vue') },
+        { path: 'knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue') },
         { path: 'ontology', name: 'ontology', component: () => import('../views/OntologyView.vue') },
       ],
     },

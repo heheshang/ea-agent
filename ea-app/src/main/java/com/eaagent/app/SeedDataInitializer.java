@@ -6,6 +6,7 @@ import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.ChannelConfigMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
+import com.eaagent.ontology.mapper.KnowledgeMapper;
 import com.eaagent.ontology.mapper.TemplateMapper;
 import com.eaagent.ontology.mapper.TenantMapper;
 import com.eaagent.ontology.mapper.TenantUserMapper;
@@ -14,6 +15,7 @@ import com.eaagent.ontology.model.AudienceEntity;
 import com.eaagent.ontology.model.CampaignEntity;
 import com.eaagent.ontology.model.ChannelConfigEntity;
 import com.eaagent.ontology.model.CustomerEntity;
+import com.eaagent.ontology.model.KnowledgeEntity;
 import com.eaagent.ontology.model.TemplateEntity;
 import com.eaagent.ontology.model.TenantEntity;
 import com.eaagent.ontology.model.TenantUserEntity;
@@ -50,6 +52,7 @@ public class SeedDataInitializer implements ApplicationRunner {
     private final CampaignMapper campaignMapper;
     private final CustomerMapper customerMapper;
     private final UnsubscribeMapper unsubscribeMapper;
+    private final KnowledgeMapper knowledgeMapper;
     private final PasswordEncoder encoder;
     private final CryptoService cryptoService;
     private final boolean enabled;
@@ -58,6 +61,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                                ChannelConfigMapper channelConfigMapper, AudienceMapper audienceMapper,
                                TemplateMapper templateMapper, CampaignMapper campaignMapper,
                                CustomerMapper customerMapper, UnsubscribeMapper unsubscribeMapper,
+                               KnowledgeMapper knowledgeMapper,
                                PasswordEncoder encoder, CryptoService cryptoService,
                                @Value("${ea.seed.enabled:true}") boolean enabled) {
         this.tenantMapper = tenantMapper;
@@ -68,6 +72,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         this.campaignMapper = campaignMapper;
         this.customerMapper = customerMapper;
         this.unsubscribeMapper = unsubscribeMapper;
+        this.knowledgeMapper = knowledgeMapper;
         this.encoder = encoder;
         this.cryptoService = cryptoService;
         this.enabled = enabled;
@@ -84,6 +89,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         if (demo != null) {
             seedSmsChannel(demo.getId());
             seedEmailChannel(demo.getId());
+            seedKnowledge(demo.getId());
             log.info("demo tenant already seeded, skip core seed");
             return;
         }
@@ -98,6 +104,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         seedCampaign(tenantId, adminId, audienceId, templateId);
         seedCustomers(tenantId);
         seedUnsubscribe(tenantId);
+        seedKnowledge(tenantId);
         log.info("demo seed done: tenant={} admin={}", tenantId, adminId);
     }
 
@@ -260,6 +267,39 @@ public class SeedDataInitializer implements ApplicationRunner {
         u.setReason("演示退订");
         u.setCreatedAt(Instant.now());
         unsubscribeMapper.insert(u);
+    }
+
+    /** 演示知识库条目（与系统真实行为一致：退订/冷却窗/灰度；幂等，该租户已有条目则跳过）。 */
+    private void seedKnowledge(Long tenantId) {
+        Long exists = knowledgeMapper.selectCount(new QueryWrapper<KnowledgeEntity>()
+                .eq(KnowledgeEntity.COL_TENANT_ID, tenantId));
+        if (exists != null && exists > 0) {
+            return;
+        }
+        Instant now = Instant.now();
+        Object[][] rows = {
+                {"触达退订规范", "触达前必须核对客户退订状态（unsubscribe 表）：已退订客户禁止任何渠道触达；"
+                        + "客户在任一渠道退订即视为全局退订，其他渠道也不得再触达。违规触达会直接发失败。",
+                        List.of("退订", "触达", "合规")},
+                {"冷却窗与频控", "同一客户在活动触发规则的冷却窗口（trigger_rule.cooldown，ISO-8601 时长）内不得重复触达，"
+                        + "频道级频控按每天上限（频道配置 max_per_day）限制；临近冷却窗末的触达需重新评估最近一次触达时间。",
+                        List.of("冷却", "频控", "触发规则")},
+                {"灰度发布", "活动支持灰度发布：gray_ratio 表示放量百分比（1-99 部分灰度，100 全量）；"
+                        + "按客户 ID 做 SHA256 确定性分桶，同一客户在灰度与全量切换期间结果一致。AB 模式（ab_mode=AB）下按 ab_split 比例分两组对照。",
+                        List.of("灰度", "AB", "发布")},
+        };
+        for (Object[] row : rows) {
+            KnowledgeEntity k = new KnowledgeEntity();
+            k.setTenantId(tenantId);
+            k.setTitle((String) row[0]);
+            k.setContent((String) row[1]);
+            k.setTags((List<String>) row[2]);
+            k.setEnabled(true);
+            k.setCreatedAt(now);
+            k.setUpdatedAt(now);
+            knowledgeMapper.insert(k);
+        }
+        log.info("knowledge seeded: tenant={} count={}", tenantId, rows.length);
     }
 
     static String sha256Hex(String s) {

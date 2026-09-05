@@ -2,6 +2,7 @@ package com.eaagent.agent.engine;
 
 import com.eaagent.agent.event.EngineEvent;
 import com.eaagent.agent.mcp.McpClientRegistry;
+import com.eaagent.agent.service.KnowledgeBaseService;
 import com.eaagent.agent.tool.AgentToolRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -9,6 +10,7 @@ import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.mapper.AgentToolCallMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
 import com.eaagent.ontology.model.AgentToolCallEntity;
+import com.eaagent.ontology.model.KnowledgeEntity;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -64,10 +66,13 @@ public class AgentscopeAgentEngine implements AgentEngine {
             约束：
             1. 只使用工具返回的数据；触达前必须核对退订、冷却窗与灰度；所有面向用户的回复一律使用中文（含总结、澄清、拒绝、计划），输出简洁、可执行。
             2. 只能调用运营工具（客户/人群/活动/触达/事件查询、applyAction 触达、callFunction 咨询函数）与 MCP 接入的外部工具（名称含 mcp_ 前缀），其余工具一概禁止；禁止探索文件、代码或系统资源。
-            3. 用户说「继续/接着做/然后呢」等延续指令时，依据【会话回顾】中的最近目标与结果直接推进，不要重新探索。""";
+            3. 用户说「继续/接着做/然后呢」等延续指令时，依据【会话回顾】中的最近目标与结果直接推进，不要重新探索。
+            4. 当上下文中出现【知识库】材料时，优先将其作为业务规则与事实的依据；与工具实时查询结果冲突时，以实时查询结果为准。""";
 
     /** 会话记忆：最多回顾的轮次数。 */
     private static final int MEMORY_ROUNDS = 5;
+    /** 知识库注入：单条内容最大注入长度（防 token 膨胀，超出截断）。 */
+    private static final int KNOWLEDGE_CONTENT_LIMIT = 500;
     /** 回顾中单条目标截断长度（防 token 膨胀）。 */
     private static final int MEMORY_GOAL_LIMIT = 150;
     /** 回顾中单条结果摘要截断长度。 */
@@ -75,7 +80,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     /** 落库摘要最大长度（完整回复截断，防 jsonb/token 膨胀）。 */
     private static final int SUMMARY_STORE_LIMIT = 600;
     /** 系统提示词版本（统计维度 prompt_info.sys_prompt_version，改提示词结构时递增）。 */
-    private static final String SYS_PROMPT_VERSION = "v6";
+    private static final String SYS_PROMPT_VERSION = "v7";
 
     private final String model;
     private final String apiKey;
@@ -87,6 +92,9 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private final double cachedPrice;
     private final AgentToolRegistry toolRegistry;
     private final McpClientRegistry mcpRegistry;
+    private final KnowledgeBaseService knowledgeService;
+    /** 知识库每轮注入条数上限（ea.knowledge.top-k，默认 3）。 */
+    private final int knowledgeTopK;
     private final AgentRunMapper runMapper;
     private final AgentToolCallMapper toolCallMapper;
     /** 技能目录（技能仓库 Layer-2，配置驱动；默认仓库内 agentscope-skills/）。 */
@@ -106,6 +114,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
             @Value("${ea.agentscope.skills-dir:agentscope-skills}") String skillsDir,
             AgentToolRegistry toolRegistry,
             McpClientRegistry mcpRegistry,
+            KnowledgeBaseService knowledgeService,
+            @Value("${ea.knowledge.top-k:3}") int knowledgeTopK,
             AgentRunMapper runMapper,
             AgentToolCallMapper toolCallMapper) {
         this.model = model;
@@ -117,6 +127,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
         this.cachedPrice = cachedPrice;
         this.toolRegistry = toolRegistry;
         this.mcpRegistry = mcpRegistry;
+        this.knowledgeService = knowledgeService;
+        this.knowledgeTopK = Math.max(knowledgeTopK, 0);
         this.skillsDir = skillsDir;
         this.runMapper = runMapper;
         this.toolCallMapper = toolCallMapper;
@@ -137,15 +149,16 @@ public class AgentscopeAgentEngine implements AgentEngine {
         return true;
     }
 
-    /** 会话记忆打包结果：消息列表 + 注入的回顾条数（统计维度 prompt_info.memory_review_count）。 */
-    private record MemoryPack(List<Msg> messages, int reviewCount) {
+    /** 上下文打包结果：消息列表 + 注入的回顾条数 + 注入的知识库条数（统计 prompt_info.memory_review_count / kb_hits）。 */
+    private record MemoryPack(List<Msg> messages, int reviewCount, int kbHits) {
     }
 
     /**
-     * 会话记忆（Step 1）：同 (tenant, session) 已完成轮次（status != NEW）的最近 N 条
-     * goal+status，拼成一段「会话回顾」用户消息置于当前消息之前。
-     * 无历史返回空列表——行为退化为现状（零回归）。
-     * 注入消息而非 sysPrompt：HarnessAgent 按 session 缓存只建一次，sysPrompt 不会随轮次刷新。
+     * 上下文装配（Step 1）：会话记忆（同 (tenant, session) 已完成轮次的最近 N 条 goal+status，
+     * 拼「会话回顾」用户消息）+ 知识库检索（与 userInput 相关度 topK 条目，拼「知识库」用户消息），
+     * 均置于当前 userInput 之前；注入消息而非 sysPrompt——HarnessAgent 按 session 缓存只建一次，
+     * sysPrompt 不会随轮次刷新。
+     * 无历史/无命中时对应消息不拼——行为退化为现状（零回归）。
      */
     private MemoryPack withSessionMemory(RunContext rc, String userInput) {
         List<AgentRunEntity> history = runMapper.selectList(new QueryWrapper<AgentRunEntity>()
@@ -156,7 +169,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
                 .ne(AgentRunEntity.COL_ID, Long.valueOf(rc.runId()))
                 .orderByDesc(AgentRunEntity.COL_ID)
                 .last("LIMIT " + MEMORY_ROUNDS));
-        List<Msg> messages = new ArrayList<>(history.size() + 1);
+        List<Msg> messages = new ArrayList<>(history.size() + 2);
         if (!history.isEmpty()) {
             Collections.reverse(history); // 最近在后，时间正序
             StringBuilder sb = new StringBuilder("【会话回顾】以下是你在本会话中此前的交互记录（目标、结果摘要与状态，时间正序）：\n");
@@ -178,10 +191,31 @@ public class AgentscopeAgentEngine implements AgentEngine {
             sb.append("当前请求可能是这些历史的延续、追问或修正，也可能无关；无关时请忽略回顾，只处理当前请求。");
             messages.add(new UserMessage(sb.toString()));
         }
+        // 知识库检索注入（RAG）：同一确定性打分（KnowledgeBaseService），无命中不注入（零回归）
+        int kbHits = 0;
+        List<KnowledgeEntity> kb = knowledgeService.search(rc.tenantId(), userInput);
+        if (!kb.isEmpty()) {
+            StringBuilder sb = new StringBuilder(
+                    "【知识库】以下是系统检索到与本次请求相关度最高的知识库条目（按相关度排序；如无关请忽略，与实时查询结果冲突时以实时查询结果为准）：\n");
+            for (KnowledgeEntity e : kb) {
+                sb.append("- 《").append(e.getTitle()).append('》');
+                List<String> tags = e.getTags();
+                if (tags != null && !tags.isEmpty()) {
+                    sb.append(" 标签：").append(String.join("、", tags));
+                }
+                String content = e.getContent() == null ? "" : e.getContent();
+                if (content.length() > KNOWLEDGE_CONTENT_LIMIT) {
+                    content = content.substring(0, KNOWLEDGE_CONTENT_LIMIT) + "…";
+                }
+                sb.append("\n  内容：").append(content).append('\n');
+            }
+            messages.add(new UserMessage(sb.toString()));
+            kbHits = kb.size();
+        }
         messages.add(new UserMessage(userInput));
-        log.debug("session memory runId={} sessionId={} reviewCount={}",
-                rc.runId(), rc.sessionId(), history.size());
-        return new MemoryPack(messages, history.size());
+        log.debug("session memory runId={} sessionId={} reviewCount={} kbHits={}",
+                rc.runId(), rc.sessionId(), history.size(), kbHits);
+        return new MemoryPack(messages, history.size(), kbHits);
     }
 
     @Override
@@ -229,10 +263,10 @@ public class AgentscopeAgentEngine implements AgentEngine {
         Map<String, StringBuilder> toolArgs = new HashMap<>();
         MemoryPack pack = withSessionMemory(rc, userInput);
         if (statsMw != null) {
-            statsMw.begin(pack.reviewCount());
+            statsMw.begin(pack.reviewCount(), pack.kbHits());
         }
-        log.info("stream start runId={} sessionId={} model={} memoryReview={}",
-                rc.runId(), rc.sessionId(), model, pack.reviewCount());
+        log.info("stream start runId={} sessionId={} model={} memoryReview={} kbHits={}",
+                rc.runId(), rc.sessionId(), model, pack.reviewCount(), pack.kbHits());
         // v2 流式 API：streamEvents → Flux<AgentEvent>（Delta 原生，无需 StreamOptions 开关）；
         // RuntimeContext 显式携带 sessionId，语义同 v1 defaultSessionId 会话隔离
         return a.streamEvents(pack.messages(),
@@ -269,7 +303,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
 
     /**
      * 完成时回写多维度统计：usage（token 构成/模型调用数）/ tool_calls（工具与 skill 明细）/
-     * cost（按单价估算，缓存命中输入按缓存价）/ prompt_info（系统提示词版本长度 + 回顾注入数）。
+     * cost（按单价估算，缓存命中输入按缓存价）/ prompt_info（系统提示词版本长度 + 回顾注入数 + 知识库注入数）。
      * tokens_used 兼容旧语义 = 输入 + 输出。旧 run 四列 NULL 兼容，统计 API 按 NULL 处理。
      */
     private void persistStats(RunContext rc, String userInput, RunStatsMiddleware statsMw) {
@@ -319,6 +353,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
         promptInfo.put("sys_prompt_version", SYS_PROMPT_VERSION);
         promptInfo.put("sys_prompt_len", SYS_PROMPT.length());
         promptInfo.put("memory_review_count", statsMw.reviewCount());
+        promptInfo.put("kb_hits", statsMw.kbHits());
         promptInfo.put("input_len", userInput == null ? 0 : userInput.length());
 
         UpdateWrapper<AgentRunEntity> uw = new UpdateWrapper<AgentRunEntity>()

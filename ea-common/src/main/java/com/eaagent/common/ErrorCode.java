@@ -27,6 +27,7 @@ public enum ErrorCode {
     TYPE_UNKNOWN(12004, "类型未知"),
     DYNAMIC_SECURITY_VIOLATION(12005, "动态安全越权"),
     STATIC_MEMBER_REJECTED(12006, "人群模式写成员拒绝"),
+    KNOWLEDGE_NOT_FOUND(12007, "知识条目不存在"),
 
     // ---- 13xxx Action ----
     ACTION_NOT_REGISTERED(13001, "Action 未注册"),

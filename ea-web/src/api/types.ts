@@ -34,6 +34,26 @@ export interface AgentRun {
   updatedAt?: string
 }
 
+/** 知识库条目（租户维度，对话检索注入上下文）。 */
+export interface KnowledgeEntry {
+  id: number
+  tenantId: number
+  title: string
+  content: string
+  tags?: string[]
+  enabled: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 知识库试检索命中（与 Agent 注入同源打分）。 */
+export interface KnowledgeHit {
+  id: number
+  title: string
+  tags: string[]
+  score: number
+}
+
 export interface Row {
   [key: string]: unknown
 }
