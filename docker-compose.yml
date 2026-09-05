@@ -34,10 +34,12 @@ services:
     build: ./mock-gw
     container_name: ea-mock-gw
     environment:
-      CALLBACK_URL: http://ea-app:8081/api/channels/sms/callback
-      EMAIL_CALLBACK_URL: http://ea-app:8081/api/channels/email/callback
+      CALLBACK_URL: http://host.docker.internal:8081/api/channels/sms/callback
+      EMAIL_CALLBACK_URL: http://host.docker.internal:8081/api/channels/email/callback
       CALLBACK_SECRET: sms-callback-secret-1
       SMS_API_KEY: test-api-key
+    ports:
+      - "8090:8090"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2)"]
       interval: 5s

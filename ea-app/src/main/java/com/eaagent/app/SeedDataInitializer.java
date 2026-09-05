@@ -138,7 +138,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         channelConfigMapper.insert(c);
     }
 
-    /** 短信真实通道（mock 网关联调）：endpoint 指向 compose 内 mock-gw；幂等，已有配置则跳过。 */
+    /** 短信真实通道（mock 网关联调）：endpoint 由 EA_MOCK_GW_URL 指定（容器内默认 compose 网络名，本地启动指 localhost:8090）；幂等，已有配置则跳过。 */
     private void seedSmsChannel(Long tenantId) {
         Long exists = channelConfigMapper.selectCount(new QueryWrapper<ChannelConfigEntity>()
                 .eq(ChannelConfigEntity.COL_TENANT_ID, tenantId)
@@ -150,7 +150,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         c.setTenantId(tenantId);
         c.setChannel("sms");
         c.setConfigEncrypted(cryptoService.encrypt(tenantId,
-                "{\"endpoint\":\"http://mock-gw:8090/sms\",\"apiKey\":\"test-api-key\","
+                "{\"endpoint\":\"" + mockGwUrl() + "/sms\",\"apiKey\":\"test-api-key\","
                         + "\"apiSecret\":\"test-api-secret\",\"signName\":\"EA运营\"}"));
         c.setCallbackSecret(cryptoService.encrypt(tenantId, "sms-callback-secret-1"));
         c.setEnabled(true);
@@ -160,7 +160,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         log.info("sms channel config seeded: tenant={}", tenantId);
     }
 
-    /** 邮件真实通道（mock 网关联调）：endpoint 指向 compose 内 mock-gw；幂等，已有配置则跳过。 */
+    /** 邮件真实通道（mock 网关联调）：endpoint 由 EA_MOCK_GW_URL 指定；幂等，已有配置则跳过。 */
     private void seedEmailChannel(Long tenantId) {
         Long exists = channelConfigMapper.selectCount(new QueryWrapper<ChannelConfigEntity>()
                 .eq(ChannelConfigEntity.COL_TENANT_ID, tenantId)
@@ -172,13 +172,22 @@ public class SeedDataInitializer implements ApplicationRunner {
         c.setTenantId(tenantId);
         c.setChannel("email");
         c.setConfigEncrypted(cryptoService.encrypt(tenantId,
-                "{\"endpoint\":\"http://mock-gw:8090/email\",\"apiKey\":\"test-api-key\","
+                "{\"endpoint\":\"" + mockGwUrl() + "/email\",\"apiKey\":\"test-api-key\","
                         + "\"apiSecret\":\"test-api-secret\"}"));
         c.setCallbackSecret(cryptoService.encrypt(tenantId, "sms-callback-secret-1"));
         c.setEnabled(true);
         c.setCreatedAt(Instant.now());
         channelConfigMapper.insert(c);
         log.info("email channel config seeded: tenant={}", tenantId);
+    }
+
+    /** mock 网关地址：本地启动（应用宿主进程）传 http://localhost:8090，容器内默认 compose 网络名 mock-gw。 */
+    private String mockGwUrl() {
+        String url = System.getenv("EA_MOCK_GW_URL");
+        if (url == null || url.isBlank()) {
+            url = "http://mock-gw:8090";
+        }
+        return url.replaceAll("/+$", "");
     }
 
     private Long seedAudience(Long tenantId, Long adminId) {

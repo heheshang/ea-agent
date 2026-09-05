@@ -11,6 +11,7 @@
 - **Agent 工具收敛**：10 工具 → 7 工具（5 查询 + applyAction + callFunction），引擎系统提示词 v4 同步约束
 - **Ontology 链路图**：新增 Function 层（引擎 → 工具 → Action/Function → 对象），运行时统计按 callFunction 入参 name 拆分聚合
 - **错误码**：新增 17xxx Function 段（E-17001 Function 未注册），详细设计附录 B 同步
+- **触发规则参数优化**：campaign `trigger_rule` 的 cooldown/window 保存时支持宽松格式（`1h`/`30m`/`2d`/`90s`/纯数字秒/ISO-8601）并归一为 ISO-8601 落库（对齐详细设计 8.4 契约 `{"event_type","window":"1d","cooldown":"1h"}`）；非法格式保存即返回 E-13002 明确报错（此前保存成功、触发时 `Duration.parse` 500/DLQ）；event_type trim 并限长 64；创建/更新两路径统一接入，发送侧宽松解析兜底存量脏值；前端触发规则表单占位示例同步
 
 ### Fixed
 

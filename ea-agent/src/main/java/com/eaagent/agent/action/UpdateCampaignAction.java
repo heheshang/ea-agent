@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.action.AbstractAction;
 import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionMeta;
@@ -137,7 +138,9 @@ public class UpdateCampaignAction extends AbstractAction {
                 merged.put(k, String.valueOf(req.get(k)));
             }
         }
-        c.setTriggerRule(merged);
+        // 保存归一：cooldown/window 宽松格式→ISO-8601，非法即报错；全量归一顺带修复存量脏值
+        Map<String, Object> ruleOut = TriggerRuleCodec.normalize(merged);
+        c.setTriggerRule(ruleOut);
 
         // ---- 落库前 AB 一致性（对齐 DB chk_campaign_ab：AB 需 ab_split 1-99 + 1-3 个变体） ----
         String effMode = (abMode != null && !abMode.isBlank()) ? abMode : c.getAbMode();
@@ -164,7 +167,7 @@ public class UpdateCampaignAction extends AbstractAction {
         out.put("ab_mode", c.getAbMode());
         out.put("ab_split", c.getAbSplit());
         out.put("ab_variants", c.getAbVariants());
-        out.put("trigger_rule", merged);
+        out.put("trigger_rule", ruleOut);
         out.put("status", c.getStatus());
         return out;
     }

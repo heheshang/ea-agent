@@ -301,9 +301,9 @@ onMounted(load)
       </el-form-item>
       <el-form-item label="触发规则">
         <div style="display: flex; flex-direction: column; gap: 8px; width: 100%">
-          <el-input v-model="form.event_type" placeholder="event_type（事件）" />
-          <el-input v-model="form.window" placeholder="window（时间窗）" />
-          <el-input v-model="form.cooldown" placeholder="cooldown（冷却，如 PT1H）" />
+          <el-input v-model="form.event_type" placeholder="事件类型，如 order_placed（留空则不事件触发）" />
+          <el-input v-model="form.window" placeholder="时间窗，如 1d（预留，可留空）" />
+          <el-input v-model="form.cooldown" placeholder="冷却窗，如 1h / 30m / 2d / PT1H（留空默认 1 小时）" />
         </div>
       </el-form-item>
     </el-form>

@@ -7,6 +7,7 @@ import com.eaagent.channel.DeliveryMessage;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.action.AbstractAction;
 import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionMeta;
@@ -109,9 +110,9 @@ public class SendTouchAction extends AbstractAction {
         Duration cooldown = null;
         String cooldownRaw = req.getString("cooldown");
         if (cooldownRaw != null && !cooldownRaw.isBlank()) {
-            cooldown = Duration.parse(cooldownRaw);
+            cooldown = TriggerRuleCodec.parseLooseDuration(cooldownRaw);
         } else if (campaign.getTriggerRule() != null && campaign.getTriggerRule().get("cooldown") != null) {
-            cooldown = Duration.parse(String.valueOf(campaign.getTriggerRule().get("cooldown")));
+            cooldown = TriggerRuleCodec.parseLooseDuration(String.valueOf(campaign.getTriggerRule().get("cooldown")));
         }
         if (cooldown == null) {
             cooldown = Duration.ofHours(1);

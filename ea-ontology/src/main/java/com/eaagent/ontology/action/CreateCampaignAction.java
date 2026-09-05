@@ -1,6 +1,7 @@
 package com.eaagent.ontology.action;
 
 import com.eaagent.common.IdempotencyService;
+import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.model.CampaignEntity;
@@ -52,7 +53,7 @@ public class CreateCampaignAction extends AbstractAction {
         c.setAbMode(abMode == null ? "NONE" : abMode);
         c.setAbSplit(req.getInt("ab_split"));
         c.setAbVariants(req.getList("ab_variants"));
-        c.setTriggerRule(req.getMap("trigger_rule"));
+        c.setTriggerRule(TriggerRuleCodec.normalize(req.getMap("trigger_rule")));
         c.setOwnerId(ctx.userId());
         c.setStatus("DRAFT");
         c.setCreatedAt(Instant.now());
