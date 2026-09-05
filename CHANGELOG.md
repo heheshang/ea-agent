@@ -6,6 +6,14 @@
 
 ### Added
 
+- **Ontology 页对象数据信息**：
+  - **对象节点下钻**：Ontology 链路图对象节点标注 `记录数`（租户维度动态安全计数）与 `字段数`（TypeRegistry 定义字段数）；点击对象节点弹出数据下钻弹窗——分页加载 `/api/objects/{type}` 实时对象数据（动态列、`加载更多` 游标翻页、`共 N 条`）。
+  - **对象数据总览**：链路图下方新增「对象数据总览」表（7 个对象：记录数/字段数 + 操作列「数据」复用下钻弹窗、「跳转」直达 /customers、/campaigns）。
+  - **统计页 Ontology 摘要**：统计看板新增「Ontology 调用链路摘要」卡片——调用总数/失败总数/对象数据量汇总 + 热点 Action/Function/工具 TOP5（调用/失败/失败率/均耗时）+ 对象数据量明细，随 days 单选切换同步刷新。
+  - **工作台工具链路标注**：`action_result`/`tool_call` 事件携带链路信息（引擎按 applyAction/callFunction 入参解析动作/函数名），前端经 ontology-graph 拓扑映射为 `工具结果 · applyAction → createCampaign · Campaign 活动` 形态标题；纯查询工具标题保持原样。
+- **Ontology 运行时统计增强**：`ontology-graph` 对象节点新增 `count`（ObjectApiService 租户维度计数，复用对象 API 动态安全过滤）与 `fields` 字段。
+- **工具结果链路溯源**：SSE `action_result` 事件新增 `chain` 字段（`{"action":"…"}` / `{"function":"…"}`），由工具调用入参增量聚合解析，前端据此标注对象链路。
+
 - **本地启动 .env 自动加载**：应用启动时经 `spring.config.import: optional:file:.env[.properties]` 读取仓库根目录 `.env`；agentscope 模型配置支持 `EA_LLM_*` 回退（优先级 `MODEL_*` → `EA_LLM_*` → 空降级 MockAgentEngine；Spring 占位符用单冒号 `${A:default}` 嵌套）。修复本地 IDEA 运行时（此前 `MODEL_*` 环境变量缺失，日志 `run execute complete durationMs≈1070` 即 MockAgentEngine 固定 5×200ms 延迟，无真实 LLM 调用）。容器路径不变（无 .env、compose 注入优先）。工作区键对齐：引擎改读 `ea.agentscope.workspace-dir`（`AGENT_WORKSPACE` 生效），删除失效的 `ea.agent.workspace-dir`。
 
 - **邮件通道 mock 闭环**：mock-gw 新增 `/email/send`、`/email/receipt`（与短信同范式：X-Api-Key 校验、`mock-email-*` message_id、2s 后回调 DELIVERED 至 `/api/channels/email/callback`）；`EmailChannelAdapter` 由 console 降级升级为配置驱动 HTTP 发送（channel_config 配置存在即走 mock 网关，未配置仍 console 降级兜底）；seed 幂等落库 email 通道配置（endpoint=mock-gw）

@@ -9,6 +9,7 @@ import com.eaagent.ontology.model.AgentRunEntity;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
+import io.agentscope.core.event.ToolCallDeltaEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ThinkingBlockDeltaEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
@@ -196,6 +197,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
         RunStatsMiddleware statsMw = statses.get(rc.sessionId());
         AtomicReference<String> finalReply = new AtomicReference<>();
         Map<String, StringBuilder> toolResults = new HashMap<>();
+        Map<String, StringBuilder> toolArgs = new HashMap<>();
         MemoryPack pack = withSessionMemory(rc, userInput);
         if (statsMw != null) {
             statsMw.begin(pack.reviewCount());
@@ -206,7 +208,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
         // RuntimeContext 显式携带 sessionId，语义同 v1 defaultSessionId 会话隔离
         return a.streamEvents(pack.messages(),
                         RuntimeContext.builder().sessionId(rc.sessionId()).build())
-                .flatMap(ev -> Mono.justOrEmpty(mapAgentEvent(ev, toolResults, finalReply)))
+                .flatMap(ev -> Mono.justOrEmpty(mapAgentEvent(ev, toolResults, toolArgs, finalReply)))
                 .doOnComplete(() -> {
                     persistSummary(rc, new StringBuilder(finalReply.get() == null ? "" : finalReply.get()));
                     persistStats(rc, userInput, statsMw);
@@ -291,12 +293,18 @@ public class AgentscopeAgentEngine implements AgentEngine {
      * </ul>
      */
     private static EngineEvent mapAgentEvent(AgentEvent ev,
-            Map<String, StringBuilder> toolResults, AtomicReference<String> finalReply) {
+            Map<String, StringBuilder> toolResults, Map<String, StringBuilder> toolArgs,
+            AtomicReference<String> finalReply) {
         if (ev instanceof ThinkingBlockDeltaEvent t) {
             return new EngineEvent("thinking_delta", "{\"text\":" + jsonQuote(t.getDelta()) + "}");
         }
         if (ev instanceof TextBlockDeltaEvent t) {
             return new EngineEvent("text_delta", "{\"text\":" + jsonQuote(t.getDelta()) + "}");
+        }
+        if (ev instanceof ToolCallDeltaEvent t) {
+            // 工具入参增量（v2：模型流式输出工具调用 JSON）→ 供 action_result 标注 Ontology 链路
+            toolArgs.computeIfAbsent(t.getToolCallId(), k -> new StringBuilder()).append(t.getDelta());
+            return null;
         }
         if (ev instanceof ToolResultTextDeltaEvent t) {
             toolResults.computeIfAbsent(t.getToolCallId(), k -> new StringBuilder())
@@ -306,9 +314,12 @@ public class AgentscopeAgentEngine implements AgentEngine {
         if (ev instanceof ToolResultEndEvent t) {
             StringBuilder sb = toolResults.remove(t.getToolCallId());
             String result = sb == null ? "" : sb.toString();
+            StringBuilder ab = toolArgs.remove(t.getToolCallId());
+            String chain = chainTarget(t.getToolCallName(), ab == null ? "" : ab.toString());
             return new EngineEvent("action_result",
                     "{\"tool\":" + jsonQuote(t.getToolCallName())
-                            + ",\"result\":" + jsonQuote(result) + "}");
+                            + ",\"result\":" + jsonQuote(result)
+                            + (chain == null ? "" : ",\"chain\":" + chain) + "}");
         }
         if (ev instanceof AgentResultEvent r && r.getResult() != null) {
             finalReply.set(renderFinalText(r.getResult()));
@@ -330,6 +341,64 @@ public class AgentscopeAgentEngine implements AgentEngine {
 
     private static String jsonQuote(String s) {
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\"";
+    }
+
+    /**
+     * 从工具入参原文解析 Ontology 链路目标：applyAction → {"action":"…"}，callFunction → {"function":"…"}。
+     * 兼容 JSON 对象与 Java map toString 两种形态；解析失败返回 null（不标注链路）。
+     */
+    private static String chainTarget(String toolName, String rawArgs) {
+        String key;
+        String outKey;
+        if ("applyAction".equals(toolName)) {
+            key = "action";
+            outKey = "action";
+        } else if ("callFunction".equals(toolName)) {
+            key = "name";
+            outKey = "function";
+        } else {
+            return null;
+        }
+        if (rawArgs == null || rawArgs.isBlank()) {
+            return null;
+        }
+        String s = rawArgs.trim();
+        // JSON 形态：{"action":"sendTouch", …}
+        int i = s.indexOf("\"" + key + "\"");
+        if (i >= 0) {
+            int j = s.indexOf(':', i);
+            if (j >= 0) {
+                String rest = s.substring(j + 1).trim();
+                if (rest.startsWith("\"")) {
+                    int k = rest.indexOf('"', 1);
+                    if (k > 1) {
+                        return "{\"" + outKey + "\":" + jsonQuote(rest.substring(1, k)) + "}";
+                    }
+                }
+            }
+        }
+        // Java map toString 形态：{action=sendTouch, args={…}}
+        i = s.indexOf(key + "=");
+        if (i >= 0) {
+            String rest = s.substring(i + key.length() + 1).trim();
+            int comma = rest.indexOf(',');
+            int brace = rest.indexOf('}');
+            int end;
+            if (comma > 0 && brace > 0) {
+                end = Math.min(comma, brace);
+            } else if (comma > 0) {
+                end = comma;
+            } else if (brace > 0) {
+                end = brace;
+            } else {
+                end = rest.length();
+            }
+            String v = rest.substring(0, end).trim();
+            if (!v.isEmpty()) {
+                return "{\"" + outKey + "\":" + jsonQuote(v) + "}";
+            }
+        }
+        return null;
     }
 
     @PreDestroy

@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
+import com.eaagent.ontology.service.ObjectApiService;
+import com.eaagent.ontology.type.TypeRegistry;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -31,9 +33,11 @@ import java.util.stream.Collectors;
 public class AgentStatsService {
 
     private final AgentRunMapper runMapper;
+    private final ObjectApiService objectApi;
 
-    public AgentStatsService(AgentRunMapper runMapper) {
+    public AgentStatsService(AgentRunMapper runMapper, ObjectApiService objectApi) {
         this.runMapper = runMapper;
+        this.objectApi = objectApi;
     }
 
     public Map<String, Object> stats(long tenantId, int days, String sessionId) {
@@ -315,8 +319,16 @@ public class AgentStatsService {
                     : Map.of("id", "function:" + fn, "type", "function", "label", fn,
                     "calls", a.calls, "avg_ms", a.calls == 0 ? 0 : round0(a.msSum / (double) a.calls), "fails", a.fails));
         }
+        // 对象节点：静态 label + 租户数据量（count）与字段数（fields，TypeRegistry 定义）
+        Map<String, Long> objCounts = objectApi.tenantCounts(new ArrayList<>(objectLabels.keySet()));
         for (String obj : objectLabels.keySet()) {
-            nodes.add(Map.of("id", "obj:" + obj, "type", "object", "label", objectLabels.get(obj)));
+            Map<String, Object> n = new LinkedHashMap<>();
+            n.put("id", "obj:" + obj);
+            n.put("type", "object");
+            n.put("label", objectLabels.get(obj));
+            n.put("count", objCounts.getOrDefault(obj, 0L));
+            n.put("fields", TypeRegistry.get(obj).fields().size());
+            nodes.add(n);
         }
 
         // 边

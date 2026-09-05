@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { get } from '../api/http'
 
 /**
@@ -15,6 +16,8 @@ interface OntologyNode {
   calls?: number
   avg_ms?: number
   fails?: number
+  count?: number // 仅 object 节点：对象数据量
+  fields?: number // 仅 object 节点：TypeRegistry 定义字段数
 }
 interface OntologyEdge {
   from: string
@@ -61,6 +64,77 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/** 对象数据下钻弹窗（对象节点 / 总览表「数据」按钮共用） */
+interface DrillState {
+  type: string // 去掉 obj: 前缀的对象类型，如 customer
+  label: string
+  count: number
+  fields: number
+}
+interface ObjRow {
+  [key: string]: unknown
+}
+interface PageResult<T> {
+  items: T[]
+  nextPageToken: string | null
+  total: number
+}
+
+const router = useRouter()
+const drillVisible = ref(false)
+const drillState = ref<DrillState | null>(null)
+const drillLoading = ref(false)
+const drillItems = ref<ObjRow[]>([])
+const drillColumns = ref<string[]>([])
+const drillTotal = ref(0)
+const drillNextToken = ref<string | null>(null)
+
+function openDrill(node: OntologyNode) {
+  drillState.value = {
+    type: node.id.replace(/^obj:/, ''),
+    label: node.label,
+    count: node.count ?? 0,
+    fields: node.fields ?? 0,
+  }
+  drillItems.value = []
+  drillColumns.value = []
+  drillTotal.value = 0
+  drillNextToken.value = null
+  drillVisible.value = true
+  loadDrill(true)
+}
+
+async function loadDrill(reset: boolean) {
+  const st = drillState.value
+  if (!st || !drillVisible.value) return
+  drillLoading.value = true
+  try {
+    const params: Record<string, unknown> = { limit: 20, sort: '-created_at' }
+    if (!reset && drillNextToken.value) params.page_token = drillNextToken.value
+    const page = await get<PageResult<ObjRow>>(`/objects/${st.type}`, params)
+    if (reset) {
+      drillItems.value = page.items
+      drillColumns.value = page.items.length ? Object.keys(page.items[0]) : []
+    } else {
+      drillItems.value = [...drillItems.value, ...page.items]
+    }
+    drillTotal.value = page.total
+    drillNextToken.value = page.nextPageToken
+  } finally {
+    drillLoading.value = false
+  }
+}
+
+function loadMore() {
+  if (drillLoading.value) return
+  loadDrill(false)
+}
+
+function jumpTo(node: OntologyNode) {
+  if (node.id === 'obj:customer') router.push('/customers')
+  else if (node.id === 'obj:campaign') router.push('/campaigns')
 }
 
 onMounted(load)
@@ -209,8 +283,16 @@ onMounted(load)
       <!-- 对象 -->
       <div class="layer">
         <div class="layer-title">对象</div>
-        <div v-for="n in layerNodes('object')" :key="n.id" class="node object">
+        <div
+          v-for="n in layerNodes('object')"
+          :key="n.id"
+          class="node object"
+          title="点击下钻数据"
+          @click="openDrill(n)"
+        >
           <span class="n-label">{{ n.label }}</span>
+          <span class="badge">记录 {{ fmtInt(n.count ?? 0) }}</span>
+          <span class="badge">字段 {{ fmtInt(n.fields ?? 0) }}</span>
         </div>
       </div>
 
@@ -227,6 +309,55 @@ onMounted(load)
         </div>
       </div>
     </div>
+
+    <!-- 对象数据总览：与上图共享同一次 graph 数据 -->
+    <el-card v-if="data" shadow="never" class="overview-card">
+      <template #header>
+        <span class="overview-title">对象数据总览</span>
+      </template>
+      <el-table :data="layerNodes('object')" size="small">
+        <el-table-column prop="label" label="对象" min-width="160" />
+        <el-table-column label="记录数" width="120">
+          <template #default="{ row }">{{ fmtInt(row.count ?? 0) }}</template>
+        </el-table-column>
+        <el-table-column label="字段数" width="100">
+          <template #default="{ row }">{{ fmtInt(row.fields ?? 0) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="180">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" @click="openDrill(row)">数据</el-button>
+            <el-button v-if="row.id === 'obj:customer' || row.id === 'obj:campaign'" size="small" @click="jumpTo(row)">跳转</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <!-- 对象数据下钻弹窗 -->
+    <el-dialog v-model="drillVisible" :title="drillState ? `${drillState.label} · 数据下钻` : ''" width="860px" destroy-on-close>
+      <template v-if="drillState">
+        <el-table v-if="drillItems.length" v-loading="drillLoading" :data="drillItems" size="small" max-height="420">
+          <el-table-column
+            v-for="c in drillColumns"
+            :key="c"
+            :prop="c"
+            :label="c"
+            min-width="140"
+            show-overflow-tooltip
+          />
+        </el-table>
+        <el-empty v-else-if="!drillLoading" description="暂无数据" />
+        <div class="drill-footer">
+          <span class="drill-total">共 {{ fmtInt(drillTotal) }} 条</span>
+          <el-button
+            v-if="drillItems.length < drillTotal"
+            size="small"
+            :disabled="!drillNextToken"
+            :loading="drillLoading"
+            @click="loadMore"
+          >加载更多</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -326,7 +457,11 @@ onMounted(load)
 .node.tool { background: #e8ffea; border-color: #00b42a; }
 .node.action { background: #fff3e8; border-color: #ff7d00; }
 .node.function { background: #e6fffb; border-color: #13c2c2; }
-.node.object { background: #f9f0ff; border-color: #722ed1; }
+.node.object { background: #f9f0ff; border-color: #722ed1; cursor: pointer; }
+.node.object:hover {
+  border-color: #722ed1;
+  box-shadow: 0 2px 8px rgba(114, 46, 209, 0.18);
+}
 .node.dead {
   background: #f7f8fa;
   border-color: #e5e6eb;
@@ -394,5 +529,24 @@ onMounted(load)
   text-decoration: line-through;
   text-decoration-style: dotted;
   opacity: 0.7;
+}
+
+.overview-card {
+  border-radius: 12px;
+}
+.overview-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1d2129;
+}
+.drill-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+.drill-total {
+  font-size: 13px;
+  color: #86909c;
 }
 </style>

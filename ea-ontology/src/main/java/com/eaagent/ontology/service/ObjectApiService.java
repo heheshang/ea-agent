@@ -12,6 +12,7 @@ import com.eaagent.common.PageToken;
 import com.eaagent.common.TenantContext;
 import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
+import com.eaagent.ontology.mapper.ChannelConfigMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
 import com.eaagent.ontology.mapper.DeliveryMapper;
 import com.eaagent.ontology.mapper.EventMapper;
@@ -51,6 +52,7 @@ public class ObjectApiService {
     private final AudienceMapper audienceMapper;
     private final CampaignMapper campaignMapper;
     private final TemplateMapper templateMapper;
+    private final ChannelConfigMapper channelConfigMapper;
     private final DeliveryMapper deliveryMapper;
     private final EventMapper eventMapper;
 
@@ -151,6 +153,25 @@ public class ObjectApiService {
         return out;
     }
 
+    /**
+     * 批量对象行数（Ontology 图对象节点数据量）：
+     * 租户隔离 + 动态安全过滤与 search 一致（audience/campaign 非 owner 仅统计可见部分）。
+     */
+    public Map<String, Long> tenantCounts(List<String> types) {
+        long tenantId = TenantContext.requiredTenantId();
+        Map<String, Long> out = new LinkedHashMap<>();
+        for (String type : types) {
+            ObjectTypeDef def = TypeRegistry.get(type);
+            BaseMapper<?> mapper = mapperFor(type);
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            QueryWrapper w = new QueryWrapper<>();
+            w.eq(DeliveryEntity.COL_TENANT_ID, tenantId);
+            applyDynamicSecurityFilter(def, w);
+            out.put(type, mapper.selectCount(w));
+        }
+        return out;
+    }
+
     // ---- 内部 ----
 
     @SuppressWarnings("rawtypes")
@@ -242,6 +263,7 @@ public class ObjectApiService {
             case "AudienceEntity" -> audienceMapper;
             case "CampaignEntity" -> campaignMapper;
             case "TemplateEntity" -> templateMapper;
+            case "ChannelConfigEntity" -> channelConfigMapper;
             case "DeliveryEntity" -> deliveryMapper;
             case "EventEntity" -> eventMapper;
             default -> throw new BizException(ErrorCode.TYPE_UNKNOWN);
@@ -254,6 +276,7 @@ public class ObjectApiService {
             case "AudienceEntity" -> audienceMapper;
             case "CampaignEntity" -> campaignMapper;
             case "TemplateEntity" -> templateMapper;
+            case "ChannelConfigEntity" -> channelConfigMapper;
             case "DeliveryEntity" -> deliveryMapper;
             case "EventEntity" -> eventMapper;
             default -> throw new BizException(ErrorCode.TYPE_UNKNOWN);

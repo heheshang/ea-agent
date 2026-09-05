@@ -18,9 +18,27 @@ interface StatsData {
   top_slow_runs: Array<{ id: number; goal: string; status: string; duration_s: number; cost: number }>
 }
 
+interface OntoNode {
+  id: string
+  type: string
+  label: string
+  calls?: number
+  avg_ms?: number
+  fails?: number
+  count?: number // 仅 object 节点：对象数据量
+  fields?: number // 仅 object 节点：TypeRegistry 定义字段数
+}
+
+interface OntoGraph {
+  nodes: OntoNode[]
+  edges: Array<{ from: string; to: string; calls?: number; avg_ms?: number; fails?: number }>
+}
+
 const days = ref(7)
 const loading = ref(false)
 const data = ref<StatsData | null>(null)
+const ontoLoading = ref(false)
+const onto = ref<OntoGraph | null>(null)
 
 function fmt(v: number | undefined, digits = 1): string {
   if (v === undefined || v === null || Number.isNaN(v)) return '-'
@@ -44,10 +62,17 @@ function pct(v: number | undefined): string {
 
 async function load() {
   loading.value = true
+  ontoLoading.value = true
   try {
-    data.value = await get<StatsData>('/agent/stats', { days: days.value, session_id: undefined })
+    const [stats, graph] = await Promise.all([
+      get<StatsData>('/agent/stats', { days: days.value, session_id: undefined }),
+      get<OntoGraph>('/agent/stats/ontology-graph', { days: days.value }),
+    ])
+    data.value = stats
+    onto.value = graph
   } finally {
     loading.value = false
+    ontoLoading.value = false
   }
 }
 
@@ -60,6 +85,26 @@ function tokenParts(): Array<{ label: string; value: number; color: string }> {
     { label: '输出', value: s.output_tokens ?? 0, color: '#7be0a6' },
     { label: '缓存命中', value: s.cached_tokens ?? 0, color: '#f7ba1e' },
   ]
+}
+
+function ontoSummary(): { calls: number; fails: number; objects: number } {
+  const nodes = onto.value?.nodes ?? []
+  return {
+    calls: nodes.reduce((s, n) => s + (n.calls ?? 0), 0),
+    fails: nodes.reduce((s, n) => s + (n.fails ?? 0), 0),
+    objects: nodes.filter((n) => n.type === 'object').reduce((s, n) => s + (n.count ?? 0), 0),
+  }
+}
+
+function hotTop(type: string, n = 5): OntoNode[] {
+  return [...(onto.value?.nodes ?? [])]
+    .filter((nd) => nd.type === type && (nd.calls ?? 0) > 0)
+    .sort((a, b) => (b.calls ?? 0) - (a.calls ?? 0))
+    .slice(0, n)
+}
+
+function objectRows(): OntoNode[] {
+  return (onto.value?.nodes ?? []).filter((n) => n.type === 'object')
 }
 
 onMounted(load)
@@ -173,6 +218,76 @@ onMounted(load)
         </el-card>
       </div>
 
+      <!-- Ontology 调用链路摘要 -->
+      <el-card shadow="never" class="panel" v-loading="ontoLoading">
+        <template #header>Ontology 调用链路摘要</template>
+
+        <div class="onto-cards">
+          <div class="card"><span class="k">调用总数</span><span class="v">{{ fmtInt(ontoSummary().calls) }}</span></div>
+          <div class="card"><span class="k">失败总数</span><span class="v">{{ fmtInt(ontoSummary().fails) }}</span></div>
+          <div class="card"><span class="k">对象数据量</span><span class="v">{{ fmtInt(ontoSummary().objects) }}</span></div>
+        </div>
+
+        <div class="grid-2">
+          <div>
+            <div class="onto-title">热点 Action TOP5</div>
+            <el-table v-if="hotTop('action').length" :data="hotTop('action')" size="small" max-height="280">
+              <el-table-column prop="label" label="名称" min-width="150" show-overflow-tooltip />
+              <el-table-column prop="calls" label="调用" width="70" />
+              <el-table-column prop="fails" label="失败" width="70" />
+              <el-table-column label="失败率" width="80">
+                <template #default="{ row }">{{ pct(row.fails / row.calls) }}</template>
+              </el-table-column>
+              <el-table-column label="均耗时" width="80">
+                <template #default="{ row }">{{ fmt(row.avg_ms, 0) }}ms</template>
+              </el-table-column>
+            </el-table>
+            <div v-else class="empty-tip">近 {{ days }} 天无 Action 调用</div>
+          </div>
+          <div>
+            <div class="onto-title">热点 Function TOP5</div>
+            <el-table v-if="hotTop('function').length" :data="hotTop('function')" size="small" max-height="280">
+              <el-table-column prop="label" label="名称" min-width="150" show-overflow-tooltip />
+              <el-table-column prop="calls" label="调用" width="70" />
+              <el-table-column prop="fails" label="失败" width="70" />
+              <el-table-column label="失败率" width="80">
+                <template #default="{ row }">{{ pct(row.fails / row.calls) }}</template>
+              </el-table-column>
+              <el-table-column label="均耗时" width="80">
+                <template #default="{ row }">{{ fmt(row.avg_ms, 0) }}ms</template>
+              </el-table-column>
+            </el-table>
+            <div v-else class="empty-tip">近 {{ days }} 天无 Function 调用</div>
+          </div>
+        </div>
+
+        <div class="onto-title">热点工具 TOP5</div>
+        <el-table v-if="hotTop('tool').length" :data="hotTop('tool')" size="small" max-height="280">
+          <el-table-column prop="label" label="名称" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="calls" label="调用" width="70" />
+          <el-table-column prop="fails" label="失败" width="70" />
+          <el-table-column label="失败率" width="80">
+            <template #default="{ row }">{{ pct(row.fails / row.calls) }}</template>
+          </el-table-column>
+          <el-table-column label="均耗时" width="80">
+            <template #default="{ row }">{{ fmt(row.avg_ms, 0) }}ms</template>
+          </el-table-column>
+        </el-table>
+        <div v-else class="empty-tip">近 {{ days }} 天无工具调用</div>
+
+        <div class="onto-title">对象数据量</div>
+        <el-table v-if="objectRows().length" :data="objectRows()" size="small" max-height="280">
+          <el-table-column prop="label" label="对象" min-width="150" />
+          <el-table-column label="记录数" width="110">
+            <template #default="{ row }">{{ fmtInt(row.count) }}</template>
+          </el-table-column>
+          <el-table-column label="字段数" width="90">
+            <template #default="{ row }">{{ fmtInt(row.fields) }}</template>
+          </el-table-column>
+        </el-table>
+        <div v-else class="empty-tip">暂无对象数据</div>
+      </el-card>
+
       <!-- 会话 / 模型 / 提示词版本 / 慢 run -->
       <div class="grid-2">
         <el-card shadow="never" class="panel">
@@ -275,6 +390,17 @@ onMounted(load)
   font-size: 20px;
   font-weight: 700;
   color: #1d2129;
+}
+.onto-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.onto-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2129;
+  margin: 16px 0 8px;
 }
 .grid-2 {
   display: grid;

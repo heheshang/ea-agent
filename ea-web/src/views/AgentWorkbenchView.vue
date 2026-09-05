@@ -37,6 +37,59 @@ function str(v: unknown): string {
   return v == null ? '' : String(v)
 }
 
+interface OntologyNode {
+  id: string
+  type: string
+  label: string
+}
+interface OntologyEdge {
+  from: string
+  to: string
+}
+
+/** Ontology 链路映射（模块级缓存，惰性加载一次；失败静默，标题退化为无链路）。 */
+let ontologyLoaded = false
+let ontologyLoading: Promise<void> | null = null
+const actionObj: Record<string, string> = {}
+const functionObj: Record<string, string> = {}
+const objLabel: Record<string, string> = {}
+
+function ensureOntology(): Promise<void> {
+  if (ontologyLoaded) return Promise.resolve()
+  if (ontologyLoading) return ontologyLoading
+  ontologyLoading = get<{ nodes: OntologyNode[]; edges: OntologyEdge[] }>('/agent/stats/ontology-graph', { days: 30 })
+    .then((g) => {
+      for (const n of g?.nodes ?? []) {
+        if (n.type === 'object' && n.id.startsWith('obj:')) objLabel[n.id.slice(4)] = n.label
+      }
+      for (const e of g?.edges ?? []) {
+        if (e.from.startsWith('action:') && e.to.startsWith('obj:')) actionObj[e.from.slice(7)] = e.to.slice(4)
+        else if (e.from.startsWith('function:') && e.to.startsWith('obj:')) functionObj[e.from.slice(9)] = e.to.slice(4)
+      }
+      ontologyLoaded = true
+    })
+    .catch(() => { /* 静默失败：链路缺失时标题保持原样 */ })
+    .finally(() => { ontologyLoading = null })
+  return ontologyLoading
+}
+
+/** 按 action/function 名解析对象 label；解析不到返回空串。 */
+function chainSuffix(chain: Record<string, unknown> | undefined, args: Record<string, unknown> | undefined): string {
+  const action = typeof chain?.action === 'string' ? chain.action : typeof args?.action === 'string' ? args.action : ''
+  const fn = typeof chain?.function === 'string' ? chain.function : typeof args?.name === 'string' ? args.name : ''
+  if (action) {
+    const obj = actionObj[action]
+    const label = obj ? objLabel[obj] ?? '' : ''
+    return label ? ` → ${action} · ${label}` : ` → ${action}`
+  }
+  if (fn) {
+    const obj = functionObj[fn]
+    const label = obj ? objLabel[obj] ?? '' : ''
+    return label ? ` → ${fn} · ${label}` : ` → ${fn}`
+  }
+  return ''
+}
+
 /** 事件累积：thinking/text 聚合进同一块，工具调用成步骤卡片，plan 置顶。 */
 function pushEvent(name: SseEventName, data: unknown) {
   const d = (data ?? {}) as Record<string, unknown>
@@ -71,12 +124,20 @@ function pushEvent(name: SseEventName, data: unknown) {
       else asst.blocks.push({ kind: 'thinking', text })
       break
     }
-    case 'tool_call':
-      asst.blocks.push({ kind: 'step', title: `工具调用 · ${str(d.tool ?? 'unknown')}`, detail: d.args })
+    case 'tool_call': {
+      ensureOntology()
+      const args = (d.args ?? {}) as Record<string, unknown>
+      const suffix = chainSuffix(undefined, args)
+      asst.blocks.push({ kind: 'step', title: `工具调用 · ${str(d.tool ?? 'unknown')}${suffix}`, detail: d.args })
       break
-    case 'action_result':
-      asst.blocks.push({ kind: 'step', title: `工具结果 · ${str(d.tool ?? 'unknown')}`, detail: d.result ?? d })
+    }
+    case 'action_result': {
+      ensureOntology()
+      const chain = (d.chain ?? {}) as Record<string, unknown>
+      const suffix = chainSuffix(chain, undefined)
+      asst.blocks.push({ kind: 'step', title: `工具结果 · ${str(d.tool ?? 'unknown')}${suffix}`, detail: d.result ?? d })
       break
+    }
     case 'plan':
       if (Array.isArray(d.steps)) asst.blocks.unshift({ kind: 'step', title: '计划', detail: d.steps })
       break
@@ -99,6 +160,7 @@ async function start() {
   // 不清空历史：追加本轮用户消息
   messages.value.push({ role: 'user', text: goal.value, blocks: [] })
   try {
+    await ensureOntology()
     const sessionId = localStorage.getItem('ea.session_id')
     const r = await post<{ run_id: number; status: string; session_id: string }>(
       '/agent/chat', { goal: goal.value },
@@ -126,7 +188,9 @@ function replay(run: AgentRun) {
   messages.value.push({ role: 'user', text: run.goal ?? '（历史 Run）', blocks: [] })
   running.value = true
   es?.close()
-  es = subscribeRun(run.id, pushEvent)
+  ensureOntology().then(() => {
+    es = subscribeRun(run.id, pushEvent)
+  })
 }
 
 async function refreshRuns() {
