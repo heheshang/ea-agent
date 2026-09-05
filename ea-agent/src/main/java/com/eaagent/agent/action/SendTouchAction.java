@@ -28,6 +28,7 @@ import com.eaagent.ontology.model.UnsubscribeEntity;
 import com.eaagent.ontology.service.AbBucketer;
 import com.eaagent.ontology.service.AudienceResolver;
 import com.eaagent.ontology.service.CooldownService;
+import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -58,13 +59,15 @@ public class SendTouchAction extends AbstractAction {
     private final CooldownService cooldownService;
     private final AbBucketer abBucketer;
     private final ChannelAdapterRegistry channelRegistry;
+    private final TemplateRoutingService templateRoutingService;
 
     public SendTouchAction(ActionLogMapper actionLogMapper, IdempotencyService idempotencyService,
                            StringRedisTemplate redis, CampaignMapper campaignMapper, AudienceMapper audienceMapper,
                            TemplateMapper templateMapper, CustomerMapper customerMapper,
                            DeliveryMapper deliveryMapper, UnsubscribeMapper unsubscribeMapper,
                            AudienceResolver audienceResolver, CooldownService cooldownService,
-                           AbBucketer abBucketer, ChannelAdapterRegistry channelRegistry) {
+                           AbBucketer abBucketer, ChannelAdapterRegistry channelRegistry,
+                           TemplateRoutingService templateRoutingService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
         this.audienceMapper = audienceMapper;
@@ -76,6 +79,7 @@ public class SendTouchAction extends AbstractAction {
         this.cooldownService = cooldownService;
         this.abBucketer = abBucketer;
         this.channelRegistry = channelRegistry;
+        this.templateRoutingService = templateRoutingService;
     }
 
     @Override
@@ -96,12 +100,11 @@ public class SendTouchAction extends AbstractAction {
         if (campaign == null) {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
         }
+        String eventType = req.getString("event_type");
+        Map<String, Object> eventPayload = req.getMap("event_payload");
+        Map<Long, TemplateEntity> tplCache = new HashMap<>();
         AudienceEntity audience = audienceMapper.selectById(campaign.getAudienceId());
         if (audience == null) {
-            throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
-        }
-        TemplateEntity template = templateMapper.selectById(campaign.getTemplateId());
-        if (template == null) {
             throw new BizException(ErrorCode.OBJECT_NOT_FOUND);
         }
         ChannelAdapter adapter = channelRegistry.get(campaign.getChannel());
@@ -146,13 +149,14 @@ public class SendTouchAction extends AbstractAction {
                         : "TREATMENT_" + (char) ('A' + variantIdx);
             }
             // 4. delivery 落库（request_id 幂等）
+            TemplateEntity tpl = templateRoutingService.resolve(campaign, eventType, eventPayload, c, tplCache);
             DeliveryEntity d = new DeliveryEntity();
             d.setRequestId(UUID.randomUUID().toString());
             d.setTenantId(tenantId);
             d.setCampaignId(campaign.getId());
             d.setCustomerId(c.getId());
             d.setChannel(campaign.getChannel());
-            d.setTemplateId(template.getId());
+            d.setTemplateId(tpl.getId());
             d.setGrayHit(grayHit);
             d.setAbGroup(abGroup);
             d.setStatus("PENDING");
@@ -162,7 +166,7 @@ public class SendTouchAction extends AbstractAction {
             deliveryMapper.insert(d);
             // 5. 通道发送（console 降级：回写 SENT）
             String to = pickContact(c, campaign.getChannel());
-            String content = render(template.getContent(), template.getVars(), c);
+            String content = render(tpl.getContent(), tpl.getVars(), c, eventPayload);
             try {
                 adapter.send(new DeliveryMessage(d.getId(), tenantId, c.getId(), campaign.getChannel(),
                         to, content, abGroup));
@@ -220,15 +224,18 @@ public class SendTouchAction extends AbstractAction {
         }
     }
 
-    /** {{var}} 简单模板替换：var 取值顺序 attributes → 实体字段。 */
-    private String render(String content, List<String> vars, CustomerEntity c) {
+    /** {{var}} 简单模板替换：var 取值顺序 事件 payload → 客户 attributes → 实体字段。 */
+    private String render(String content, List<String> vars, CustomerEntity c, Map<String, Object> eventPayload) {
         if (content == null) {
             return "";
         }
         String out = content;
         if (vars != null) {
             for (String v : vars) {
-                Object val = c.getAttributes() == null ? null : c.getAttributes().get(v);
+                Object val = eventPayload == null ? null : eventPayload.get(v);
+                if (val == null) {
+                    val = c.getAttributes() == null ? null : c.getAttributes().get(v);
+                }
                 if (val == null) {
                     switch (v) {
                         case "name" -> val = c.getExternalId();

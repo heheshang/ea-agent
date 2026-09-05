@@ -26,6 +26,10 @@ public class StreamPublisher {
         fields.put("tenant_id", String.valueOf(event.getTenantId()));
         fields.put("customer_id", String.valueOf(event.getCustomerId()));
         fields.put("event_type", event.getEventType());
+        // payload 业务字段随流透传：模板路由条件与占位符渲染依赖（事件→属性取值链）
+        if (event.getPayload() != null && !event.getPayload().isEmpty()) {
+            fields.put("event_payload", com.eaagent.common.JsonUtils.write(event.getPayload()));
+        }
         String messageId = redis.opsForStream().add(
                 StreamRecords.newRecord().ofObject(fields).withStreamKey(STREAM)).getValue();
         return messageId;

@@ -5,6 +5,7 @@ import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.model.CampaignEntity;
+import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -21,11 +22,14 @@ import java.util.Map;
 public class CreateCampaignAction extends AbstractAction {
 
     private final CampaignMapper campaignMapper;
+    private final TemplateRoutingService templateRoutingService;
 
     public CreateCampaignAction(ActionLogMapper actionLogMapper, IdempotencyService idempotencyService,
-                                StringRedisTemplate redis, CampaignMapper campaignMapper) {
+                                StringRedisTemplate redis, CampaignMapper campaignMapper,
+                                TemplateRoutingService templateRoutingService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
+        this.templateRoutingService = templateRoutingService;
     }
 
     @Override
@@ -53,6 +57,9 @@ public class CreateCampaignAction extends AbstractAction {
         c.setAbMode(abMode == null ? "NONE" : abMode);
         c.setAbSplit(req.getInt("ab_split"));
         c.setAbVariants(req.getList("ab_variants"));
+        List<Map<String, Object>> routing = req.getList("template_routing");
+        templateRoutingService.validate(ctx.tenantId(), routing);
+        c.setTemplateRouting(routing);
         c.setTriggerRule(TriggerRuleCodec.normalize(req.getMap("trigger_rule")));
         c.setOwnerId(ctx.userId());
         c.setStatus("DRAFT");

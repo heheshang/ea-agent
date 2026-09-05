@@ -72,6 +72,7 @@ public class CampaignController {
         args.put("ab_mode", req.getAbMode());
         args.put("ab_split", req.getAbSplit());
         args.put("ab_variants", req.getAbVariants());
+        args.put("template_routing", req.getTemplateRouting());
         args.put("trigger_rule", req.getTriggerRule());
         return Result.ok(actionRegistry.get("createCampaign").execute(ctx, ActionRequest.of(args)).data());
     }
@@ -92,6 +93,7 @@ public class CampaignController {
         args.put("ab_mode", req.getAbMode());
         args.put("ab_split", req.getAbSplit());
         args.put("ab_variants", req.getAbVariants());
+        args.put("template_routing", req.getTemplateRouting());
         args.put("trigger_rule", req.getTriggerRule());
         return Result.ok(actionRegistry.get("updateCampaign").execute(ctx, ActionRequest.of(args)).data());
     }

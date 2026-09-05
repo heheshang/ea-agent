@@ -23,6 +23,7 @@ function logout() {
         <el-menu-item index="/workbench">💬 Agent 工作台</el-menu-item>
         <el-menu-item index="/customers">👥 客户管理</el-menu-item>
         <el-menu-item index="/campaigns">🚀 运营活动</el-menu-item>
+        <el-menu-item index="/templates">📝 消息模板</el-menu-item>
         <el-menu-item index="/stats">📊 统计看板</el-menu-item>
         <el-menu-item index="/retention">📈 存留看板</el-menu-item>
         <el-menu-item index="/knowledge">📚 知识库</el-menu-item>

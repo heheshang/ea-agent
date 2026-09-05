@@ -12,6 +12,7 @@ import com.eaagent.ontology.action.ActionRequest;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.model.CampaignEntity;
+import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -32,11 +33,14 @@ public class UpdateCampaignAction extends AbstractAction {
     private static final Set<String> AB_MODES = Set.of("NONE", "AB");
 
     private final CampaignMapper campaignMapper;
+    private final TemplateRoutingService templateRoutingService;
 
     public UpdateCampaignAction(ActionLogMapper actionLogMapper, IdempotencyService idempotencyService,
-                                StringRedisTemplate redis, CampaignMapper campaignMapper) {
+                                StringRedisTemplate redis, CampaignMapper campaignMapper,
+                                TemplateRoutingService templateRoutingService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
+        this.templateRoutingService = templateRoutingService;
     }
 
     @Override
@@ -124,6 +128,12 @@ public class UpdateCampaignAction extends AbstractAction {
         if (variants != null && !variants.isEmpty()) {
             c.setAbVariants(variants);
         }
+        // template_routing 整表覆盖：传入（含空列表清空）才覆盖，缺失保留
+        if (req.get("template_routing") != null) {
+            List<Map<String, Object>> routing = req.getList("template_routing");
+            templateRoutingService.validate(ctx.tenantId(), routing);
+            c.setTemplateRouting(routing);
+        }
 
         // trigger_rule 按键合并：传入键覆盖、缺失键保留（null 不清空）
         Map<String, Object> rule = req.getMap("trigger_rule");
@@ -167,6 +177,7 @@ public class UpdateCampaignAction extends AbstractAction {
         out.put("ab_mode", c.getAbMode());
         out.put("ab_split", c.getAbSplit());
         out.put("ab_variants", c.getAbVariants());
+        out.put("template_routing", c.getTemplateRouting());
         out.put("trigger_rule", ruleOut);
         out.put("status", c.getStatus());
         return out;

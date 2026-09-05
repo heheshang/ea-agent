@@ -39,6 +39,7 @@ const emptyForm = () => ({
   ab_mode: 'NONE',
   ab_split: null as number | null,
   ab_variants_text: '',
+  template_routing_text: '',
   event_type: '',
   window: '',
   cooldown: '',
@@ -100,6 +101,7 @@ function openEdit(row: Row) {
     ab_mode: String(row.ab_mode ?? 'NONE'),
     ab_split: (row.ab_split as number | null) ?? null,
     ab_variants_text: row.ab_variants ? JSON.stringify(row.ab_variants, null, 2) : '',
+    template_routing_text: row.template_routing ? JSON.stringify(row.template_routing, null, 2) : '',
     event_type: String(rule.event_type ?? ''),
     window: rule.window == null ? '' : String(rule.window),
     cooldown: String(rule.cooldown ?? ''),
@@ -152,6 +154,19 @@ async function save() {
       return
     }
   }
+  let templateRouting: Row[] | null = null
+  if (form.template_routing_text.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(form.template_routing_text)
+      if (!Array.isArray(parsed)) {
+        throw new Error('需为 JSON 数组')
+      }
+      templateRouting = parsed as Row[]
+    } catch (e) {
+      ElMessage.error(`模板路由 JSON 解析失败：${(e as Error).message}`)
+      return
+    }
+  }
   // 触发规则仅回传非空键，避免误清原值（后端按键合并、缺失保留）
   const rule: Row = {}
   if (form.event_type.trim()) rule.event_type = form.event_type.trim()
@@ -168,6 +183,7 @@ async function save() {
     abMode: form.ab_mode,
     abSplit: form.ab_split,
     abVariants: abVariants,
+    templateRouting: templateRouting,
     triggerRule: rule,
   }
   saving.value = true
@@ -224,6 +240,12 @@ onMounted(load)
       <el-table-column prop="ab_mode" label="AB 模式" width="90" />
       <el-table-column prop="trigger_rule" label="触发规则" min-width="200">
         <template #default="{ row }">{{ JSON.stringify(row.trigger_rule ?? {}) }}</template>
+      </el-table-column>
+      <el-table-column prop="template_routing" label="模板路由" min-width="220">
+        <template #default="{ row }">
+          <span v-if="row.template_routing && row.template_routing.length">{{ JSON.stringify(row.template_routing) }}</span>
+          <span v-else style="color: #c0c4cc">-</span>
+        </template>
       </el-table-column>
       <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
@@ -298,6 +320,10 @@ onMounted(load)
       </el-form-item>
       <el-form-item v-if="form.ab_mode === 'AB'" label="AB 变体">
         <el-input v-model="form.ab_variants_text" type="textarea" :rows="3" placeholder='[{"name":"A","percent":30}] — percent 合计不超过 ab_split' />
+      </el-form-item>
+      <el-form-item label="模板路由">
+        <el-input v-model="form.template_routing_text" type="textarea" :rows="5"
+                  placeholder='[{"event_type":"order_placed","conditions":[{"attr":"new_customer","op":"eq","value":true}],"template_id":2}] — 顺序匹配首条命中，未命中回退主模板；留空=保留现有，填 [] 清空' />
       </el-form-item>
       <el-form-item label="触发规则">
         <div style="display: flex; flex-direction: column; gap: 8px; width: 100%">

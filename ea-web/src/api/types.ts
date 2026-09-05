@@ -54,6 +54,20 @@ export interface KnowledgeHit {
   score: number
 }
 
+/** 消息模板（租户维度，审核流 DRAFT→PENDING→APPROVED|REJECTED，REVIEWER 审批）。 */
+export interface Template {
+  id: number
+  tenantId: number
+  channel: string
+  title: string
+  content: string
+  /** 由后端从 content 的 {{占位符}} 自动提取 */
+  vars?: string[]
+  /** DRAFT|PENDING|APPROVED|REJECTED */
+  reviewStatus?: string
+  createdAt?: string
+}
+
 export interface Row {
   [key: string]: unknown
 }

@@ -96,9 +96,21 @@ public class EventConsumer {
                     matched++;
                     String cooldown = String.valueOf(rule.getOrDefault("cooldown", "PT1H"));
                     ActionContext ctx = ActionContext.of(tenantId, null, "SYSTEM", "evt:" + recordId);
+                    Map<String, Object> payload = toStringKeyMap(f);
+                    String nested = payload.get("event_payload") == null ? null : String.valueOf(payload.get("event_payload"));
+                    if (nested != null && !nested.isBlank()) {
+                        try {
+                            // 展开 payload 业务字段到顶层：模板路由条件/占位符渲染统一从上取值
+                            payload.putAll(JsonUtils.readMap(nested));
+                        } catch (Exception ignore) {
+                            log.warn("event {} invalid event_payload json, skipped", recordId);
+                        }
+                    }
                     ActionRequest req = ActionRequest.of(Map.of(
                             "campaign_id", c.getId(),
-                            "cooldown", cooldown));
+                            "cooldown", cooldown,
+                            "event_type", eventType,
+                            "event_payload", payload));
                     actionRegistry.get("sendTouch").execute(ctx, req);
                 }
             }
@@ -126,6 +138,13 @@ public class EventConsumer {
         } catch (Exception ex) {
             log.warn("dlq write failed: {}", ex.toString());
         }
+    }
+
+    /** stream 消息字段 Map<Object,Object> → 字符串键 Map（模板/路由取变量用）。 */
+    private static Map<String, Object> toStringKeyMap(Map<Object, Object> f) {
+        Map<String, Object> out = new java.util.HashMap<>();
+        f.forEach((k, v) -> out.put(String.valueOf(k), v));
+        return out;
     }
 
     private void ack(String recordId) {

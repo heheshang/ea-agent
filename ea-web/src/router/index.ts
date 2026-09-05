@@ -12,6 +12,7 @@ const router = createRouter({
         { path: 'workbench', name: 'workbench', component: () => import('../views/AgentWorkbenchView.vue') },
         { path: 'customers', name: 'customers', component: () => import('../views/CustomersView.vue') },
         { path: 'campaigns', name: 'campaigns', component: () => import('../views/CampaignsView.vue') },
+        { path: 'templates', name: 'templates', component: () => import('../views/TemplatesView.vue') },
         { path: 'stats', name: 'stats', component: () => import('../views/StatsView.vue') },
         { path: 'retention', name: 'retention', component: () => import('../views/RetentionView.vue') },
         { path: 'knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue') },
