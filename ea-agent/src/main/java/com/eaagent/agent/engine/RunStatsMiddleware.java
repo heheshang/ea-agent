@@ -1,6 +1,8 @@
 package com.eaagent.agent.engine;
 
 import com.eaagent.common.JsonUtils;
+import com.eaagent.ontology.mapper.AgentToolCallMapper;
+import com.eaagent.ontology.model.AgentToolCallEntity;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.ModelCallEndEvent;
@@ -46,6 +48,11 @@ public class RunStatsMiddleware implements MiddlewareBase {
     private final String modelName;
     /** 会话 id（仅日志关联用）。 */
     private final String sessionId;
+    /** 调用链明细落库（运行中实时写；完成时引擎按 seq 去重兜底）。 */
+    private final AgentToolCallMapper toolCallMapper;
+    /** 当前 run 上下文（begin 时绑定；供运行中实时落库调用链明细）。 */
+    private long tenantId;
+    private long runId;
     private final List<UsageAcc> usages = new ArrayList<>();
     private final List<Map<String, Object>> toolCalls = new ArrayList<>();
     /** run 内工具调用序号（ToolResultEnd 完成顺序，1 起；供调用链回放）。 */
@@ -59,13 +66,16 @@ public class RunStatsMiddleware implements MiddlewareBase {
     private final Map<String, Long> actingStartNanos = new HashMap<>();
     private final Map<String, ToolUseBlock> actingCalls = new HashMap<>();
 
-    public RunStatsMiddleware(String modelName, String sessionId) {
+    public RunStatsMiddleware(String modelName, String sessionId, AgentToolCallMapper toolCallMapper) {
         this.modelName = modelName;
         this.sessionId = sessionId;
+        this.toolCallMapper = toolCallMapper;
     }
 
     /** 新一轮开始：清空上一轮累积（串行执行，否则同 session 并发会串数据）。 */
-    public void begin(int reviewCount, int kbHits) {
+    public void begin(int reviewCount, int kbHits, long tenantId, long runId) {
+        this.tenantId = tenantId;
+        this.runId = runId;
         this.reviewCount = reviewCount;
         this.kbHits = kbHits;
         toolSeq = 0;
@@ -136,8 +146,44 @@ public class RunStatsMiddleware implements MiddlewareBase {
                 m.put("seq", ++toolSeq);
                 m.put("target", parseTarget(block.getName(), block.getInput()));
                 toolCalls.add(m);
+                // 运行中实时落库：调用链回放可查执行中的链路；失败仅告警（完成时引擎按 seq 去重兜底补齐）
+                try {
+                    toolCallMapper.insert(toEntity(tenantId, runId, m));
+                } catch (Exception ex) {
+                    log.warn("live tool call persist failed session={} toolCallId={}: {}",
+                            sessionId, e.getToolCallId(), ex.toString());
+                }
             }
         });
+    }
+
+    /** Map 明细 → agent_tool_call 行（运行时实时落库与引擎完成时兜底共用，保证同构幂等）。 */
+    static AgentToolCallEntity toEntity(long tenantId, long runId, Map<String, Object> tc) {
+        AgentToolCallEntity tce = new AgentToolCallEntity();
+        tce.setTenantId(tenantId);
+        tce.setRunId(runId);
+        Object seq = tc.get("seq");
+        tce.setSeq(seq == null ? null : ((Number) seq).intValue());
+        Object target = tc.get("target");
+        tce.setTarget(target == null ? null : String.valueOf(target));
+        String toolName = String.valueOf(tc.get("name"));
+        tce.setName(toolName);
+        if (target != null) {
+            tce.setKind("applyAction".equals(toolName) ? "action" : "function");
+        } else {
+            tce.setKind("tool");
+        }
+        tce.setArgs(String.valueOf(tc.get("params")));
+        Object dms = tc.get("duration_ms");
+        if (dms instanceof Number) {
+            tce.setDurationMs(((Number) dms).intValue());
+        }
+        tce.setOk(Boolean.TRUE.equals(tc.get("ok")));
+        Object err = tc.get("error");
+        if (err != null) {
+            tce.setError(String.valueOf(err));
+        }
+        return tce;
     }
 
     /** 汇总当前 run 的模型调用 usage，然后清空。 */

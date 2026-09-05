@@ -7,7 +7,7 @@ import lombok.Data;
 
 import java.time.Instant;
 
-/** agent_tool_call 表（调用链明细：run 内工具调用顺序，供回放/审计；引擎完成时批量写入）。 */
+/** agent_tool_call 表（调用链明细：run 内工具调用顺序，供回放/审计；工具调用完成时实时写入，运行中链路可查，引擎完成时按 seq 去重兜底）。 */
 @Data
 @TableName(value = "agent_tool_call", autoResultMap = true)
 public class AgentToolCallEntity {
