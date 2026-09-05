@@ -6,6 +6,7 @@
 
 ### Added
 
+- **邮件通道 mock 闭环**：mock-gw 新增 `/email/send`、`/email/receipt`（与短信同范式：X-Api-Key 校验、`mock-email-*` message_id、2s 后回调 DELIVERED 至 `/api/channels/email/callback`）；`EmailChannelAdapter` 由 console 降级升级为配置驱动 HTTP 发送（channel_config 配置存在即走 mock 网关，未配置仍 console 降级兜底）；seed 幂等落库 email 通道配置（endpoint=mock-gw）
 - **Call Function 三件套补齐**：`FunctionRegistry`（与 `ActionRegistry` 对称的只读咨询函数注册表）+ 单一 `callFunction` 工具路由——audienceStats / frequencyCheck / channelPreference 收编为注册函数；churnRiskScore 升级为流失预测模型 v1（近 30 天事件衰减 + 非 ACTIVE 状态加成，`model` 版本字段预留 ML 替换）；新增 bestSendTime 最优发送时段优化算法 v1（近 30 天事件 / 成功触达时段分布加权 + 23-06 安静窗口回避 + 无信号回退 10-11 时）
 - **Agent 工具收敛**：10 工具 → 7 工具（5 查询 + applyAction + callFunction），引擎系统提示词 v4 同步约束
 - **Ontology 链路图**：新增 Function 层（引擎 → 工具 → Action/Function → 对象），运行时统计按 callFunction 入参 name 拆分聚合

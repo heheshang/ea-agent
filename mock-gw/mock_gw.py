@@ -22,6 +22,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CALLBACK_URL = os.environ.get("CALLBACK_URL", "http://ea-app:8081/api/channels/sms/callback")
+EMAIL_CALLBACK_URL = os.environ.get("EMAIL_CALLBACK_URL", "http://ea-app:8081/api/channels/email/callback")
 CALLBACK_SECRET = os.environ.get("CALLBACK_SECRET", "sms-callback-secret-1")
 API_KEY = os.environ.get("SMS_API_KEY", "test-api-key")
 
@@ -32,14 +33,14 @@ def sign(message: str) -> str:
     return hmac.new(CALLBACK_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
 
 
-def fire_callback(msg_id: str, status: str) -> None:
+def fire_callback(msg_id: str, status: str, callback_url: str = CALLBACK_URL) -> None:
     SENT[msg_id] = status  # synced so active receipt queries see the latest state
     time.sleep(2)  # simulate delivery latency
     ts = int(time.time() * 1000)
     canonical = f"{msg_id}|{status}|{ts}"
     body = json.dumps({"messageId": msg_id, "status": status, "timestamp": ts}).encode()
     req = urllib.request.Request(
-        CALLBACK_URL, data=body, method="POST",
+        callback_url, data=body, method="POST",
         headers={"Content-Type": "application/json", "X-Signature": sign(canonical)})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -90,6 +91,24 @@ class Handler(BaseHTTPRequestHandler):
             f = self._form()
             mid = f.get("message_id")
             print(f"[SMS-RECEIPT] message_id={mid}", flush=True)
+            self._send({"message_id": mid, "status": SENT.get(mid, "UNKNOWN")})
+        elif self.path == "/email/send":
+            f = self._form()
+            req_key = (self.headers.get("X-Api-Key") or "").lower()
+            print(f"[EMAIL-SEND] to={f.get('to')} subject={f.get('subject')} idem={f.get('idempotency_key')} "
+                  f"apiKey={req_key} content={str(f.get('content'))[:40]}", flush=True)
+            if req_key != API_KEY.lower():
+                print(f"[EMAIL-SEND] REJECT bad api key", flush=True)
+                self._send({"error": "invalid api key"}, 401)
+                return
+            msg_id = f"mock-email-{int(time.time() * 1000)}"
+            SENT[msg_id] = "ACCEPTED"
+            threading.Thread(target=fire_callback, args=(msg_id, "DELIVERED", EMAIL_CALLBACK_URL), daemon=True).start()
+            self._send({"message_id": msg_id, "status": "ACCEPTED"})
+        elif self.path == "/email/receipt":
+            f = self._form()
+            mid = f.get("message_id")
+            print(f"[EMAIL-RECEIPT] message_id={mid}", flush=True)
             self._send({"message_id": mid, "status": SENT.get(mid, "UNKNOWN")})
         else:
             self._send({"error": "not found"}, 404)

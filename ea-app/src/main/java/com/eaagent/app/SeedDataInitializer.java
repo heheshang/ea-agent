@@ -83,6 +83,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                 .eq(TenantEntity.COL_NAME, "demo").last("LIMIT 1"));
         if (demo != null) {
             seedSmsChannel(demo.getId());
+            seedEmailChannel(demo.getId());
             log.info("demo tenant already seeded, skip core seed");
             return;
         }
@@ -91,6 +92,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         seedUser(tenantId, "reviewer", "reviewer123", "审核员", "REVIEWER");
         seedChannel(tenantId);
         seedSmsChannel(tenantId);
+        seedEmailChannel(tenantId);
         Long audienceId = seedAudience(tenantId, adminId);
         Long templateId = seedTemplate(tenantId);
         seedCampaign(tenantId, adminId, audienceId, templateId);
@@ -156,6 +158,27 @@ public class SeedDataInitializer implements ApplicationRunner {
         c.setCreatedAt(Instant.now());
         channelConfigMapper.insert(c);
         log.info("sms channel config seeded: tenant={}", tenantId);
+    }
+
+    /** 邮件真实通道（mock 网关联调）：endpoint 指向 compose 内 mock-gw；幂等，已有配置则跳过。 */
+    private void seedEmailChannel(Long tenantId) {
+        Long exists = channelConfigMapper.selectCount(new QueryWrapper<ChannelConfigEntity>()
+                .eq(ChannelConfigEntity.COL_TENANT_ID, tenantId)
+                .eq(ChannelConfigEntity.COL_CHANNEL, "email"));
+        if (exists != null && exists > 0) {
+            return;
+        }
+        ChannelConfigEntity c = new ChannelConfigEntity();
+        c.setTenantId(tenantId);
+        c.setChannel("email");
+        c.setConfigEncrypted(cryptoService.encrypt(tenantId,
+                "{\"endpoint\":\"http://mock-gw:8090/email\",\"apiKey\":\"test-api-key\","
+                        + "\"apiSecret\":\"test-api-secret\"}"));
+        c.setCallbackSecret(cryptoService.encrypt(tenantId, "sms-callback-secret-1"));
+        c.setEnabled(true);
+        c.setCreatedAt(Instant.now());
+        channelConfigMapper.insert(c);
+        log.info("email channel config seeded: tenant={}", tenantId);
     }
 
     private Long seedAudience(Long tenantId, Long adminId) {

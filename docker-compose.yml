@@ -35,6 +35,7 @@ services:
     container_name: ea-mock-gw
     environment:
       CALLBACK_URL: http://ea-app:8081/api/channels/sms/callback
+      EMAIL_CALLBACK_URL: http://ea-app:8081/api/channels/email/callback
       CALLBACK_SECRET: sms-callback-secret-1
       SMS_API_KEY: test-api-key
     healthcheck:
