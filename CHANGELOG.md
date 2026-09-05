@@ -6,6 +6,9 @@
 
 ### Added
 
+- **MCP 外部工具接入**：`ea.agentscope.mcp.servers` 配置驱动（`name`/`transport`/`url` 或 `command`+`args`+`env`/`headers`；支持 stdio / streamable-http / sse 三传输），Jackson 解析 + 惰性构建（不随应用启动连外部 server），单 server 构建/注册失败降级不阻断；wrapper 按 name 全局缓存、随会话装配进 Toolkit（`mcp_` 前缀工具与本地 7 工具同等注册可见、可被 LLM 调用）。MCP 工具以 ToolBase 注册，库默认权限语义「非只读工具每次调用需人工授权（ASK）」会让无人值守引擎的工具调用悬空（只发确认请求、工具不执行）——引擎装配后按会话切 `PermissionMode.BYPASS` 全量放行（库级 API，持久化到会话槽）。系统提示词约束 2 扩展 MCP 工具域，`SYS_PROMPT_VERSION` v5→v6。
+- **Skill 技能体系**：`ea.agentscope.skills-dir`（默认 `agentscope-skills`，随仓库提交；`.agentscope/` 被 gitignore 故不用）经 Layer-2 `skillRepositories` 并入 harness 技能仓库，workspace skills 目录（Layer-3/4）由 harness 默认装配互不干扰；技能经 `load_skill_through_path` 按需加载、提示词自动注入（skilled tools 优先约束）。新增示例技能 `delivery_analysis`（触达复盘分步指引：getCampaign → queryDelivery → 统计 → queryEvents/callFunction → 输出）。
+
 - **调用链明细落库与回放**：新增 `agent_tool_call` 明细表（V5 迁移——tenant_id/run_id/seq/kind/name/target/args/duration_ms/ok/error，索引 `(tenant_id, run_id, seq)` 与 `(tenant_id, created_at)`）；引擎完成时与 `agent_run.tool_calls` 同源批量写入（middleware 采集时补齐 run 内序号 `seq`、工具调用 id、入参解析出的 `target`（applyAction→action、callFunction→name），kind 按 `tool|action|function` 映射；无租户插件，显式写 tenant_id 即可，不新增 SSE 事件，旧 jsonb 保留兼容）。新接口 `GET /api/agent/stats/run-trace?run_id=` 按 seq 升序返回单次 run 的真实调用链（存量 run 无明细行 → 空 trace 不报错）。
 - **Ontology 流程图调用链回放**：链路图上方新增「调用链回放」面板——run 下拉（近 30 次，`#id · 时间 · 摘要`）选择后自动播放：逐步点亮真实调用链路（引擎 → 工具 → Action/Function → 对象静态边），当前步节点红色描边 + 光晕、已走过节点淡红描边、活跃边红色虚线 `stroke-dashoffset` 逐帧流动（`@keyframes trace-flow`，0.7s 循环）；播放控制 ⏮/▶/⏸ + 速度 ×1/×2/×4 + 步骤指示（`第 k/N 步 · 工具名 → 目标` + 耗时/失败标记），播放至末尾自动停止；无明细的 run 提示「该 run 无工具调用明细」。
 - **Ontology 页对象数据信息**：
@@ -27,7 +30,9 @@
 
 ### Changed
 
-- **Ontology 流程图对象拓扑边随调用实线化**：`tool:X→obj`、`action:A→obj`、`function:F→obj` 静态拓扑边原恒为虚线，与「实线 = 有调用」语义冲突（如 `action:sendTouch→obj:delivery` 30 天调用 32 次仍虚线，调用链视觉断裂）。修复：对象边按源节点聚合自带 `calls/avg_ms/fails`，有调用即实线（未调用仍虚线，节点置灰语义保留）；前端对象边只作线型不出现在调用数标签中（`showLabel` 排除 `obj:` 目标），避免对象汇聚处标签拥挤。与幻觉动作名过滤配合，30 天窗口下全图 34 条边全部实线、节点全亮，链路完整。
+- **Ontology 流程图运行前全虚线、回放激活实线动效**：边线型由「静态数据驱动（有调用即实线）」改为「**回放状态驱动**」——运行前整图所有连线均为灰虚线（拓扑预览态，`engine→tool`/`tool→action·function`/`action·function→obj` 一律虚线，调用数标签与节点徽章保留）；回放每运行到一步，该步经过的节点间连线变为**红色实线**并叠加**流动光点动画**（`edge-line-flow` 亮条沿路径 `@keyframes trace-flow` 循环流动，实线本身为走通的路径），已走过的边保持实线（进度累积），⏮ 重置回到全虚线。节点置灰（无调用）与下钻逻辑不变；后端对象边 `calls/avg_ms/fails` 统计仍保留（标签、节点徽章、统计页数据源）。
+
+- **对象拓扑边统计语义说明**：`action:sendTouch→obj:delivery` 等对象边此前「有调用即实线、无调用虚线」的静态样式已被上一条取代；其携带的源聚合 `calls/avg_ms/fails` 保留，作为调用数标签、对象节点徽章与统计页数据源，线型则完全由回放进度决定。
 
 - **Ontology 调用链路图改为流程图**：由「分层列表 + 文字箭头」改为 SVG 流程图——5 条泳道（引擎/工具/Action/Function/对象）分支连线（实线 = 有调用、虚线 = 未激活静态拓扑），连线改为**正交折线路由**：竖线段走泳道间 38px 列间隙、跨泳道长边走上下两行盒子之间 16px 行间隙带（全程不压任何盒子），箭头落点按目标盒左缘**端口垂直均布**（同一对象多条入边不再汇聚同一点，间距 ≤ 12px），长链边调用次数/均耗时标签锚定行间隙带也不被盒子遮挡。对象节点保留记录数/字段数徽章与点击数据下钻，未调用节点置灰。
 

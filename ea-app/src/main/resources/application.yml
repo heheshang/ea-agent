@@ -79,6 +79,18 @@ ea:
     api-key: ${MODEL_API_KEY:${EA_LLM_API_KEY:}}
     base-url: ${MODEL_BASE_URL:${EA_LLM_BASE_URL:}}
     workspace-dir: ${AGENT_WORKSPACE:.agentscope/workspace}
+    # 技能目录（SKILL.md 技能文件，YAML frontmatter: name/description；harness 自动注入技能提示词
+    # 与 load_skill_through_path 技能加载工具）。默认仓库内 agentscope-skills/，可经 EA_AGENTSCOPE_SKILLS_DIR 覆盖。
+    skills-dir: ${EA_AGENTSCOPE_SKILLS_DIR:agentscope-skills}
+    # MCP（Model Context Protocol）外部工具接入（ADR-5）：
+    #   name     必填，server 唯一标识（工具并入后按此注册）
+    #   transport stdio | streamable-http | sse（默认 stdio）
+    #   stdio:   command + args[] + env{}（可选）
+    #   http:    url + headers{}（可选）
+    # 单 server 构建/注册失败仅降级该 server，不阻塞 Agent。可用 EA_AGENTSCOPE_MCP_SERVERS
+    # 以 JSON 数组整体覆盖（如 [{"name":"demo","transport":"stdio","command":"python3",...}]）。
+    mcp:
+      servers: ${EA_AGENTSCOPE_MCP_SERVERS:[]}
   seed:
     enabled: ${EA_SEED:true}
 

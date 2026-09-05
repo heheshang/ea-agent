@@ -1,6 +1,7 @@
 package com.eaagent.agent.engine;
 
 import com.eaagent.agent.event.EngineEvent;
+import com.eaagent.agent.mcp.McpClientRegistry;
 import com.eaagent.agent.tool.AgentToolRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -25,6 +26,7 @@ import io.agentscope.core.model.ModelCreationContext;
 import io.agentscope.core.model.ModelRegistry;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.core.skill.repository.FileSystemSkillRepository;
 
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
@@ -61,7 +63,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
             你是 EA-Agent 智能运营助手。职责：基于客户画像与事件数据给出触达建议，并可通过工具执行查询/动作。
             约束：
             1. 只使用工具返回的数据；触达前必须核对退订、冷却窗与灰度；所有面向用户的回复一律使用中文（含总结、澄清、拒绝、计划），输出简洁、可执行。
-            2. 只能调用运营工具（客户/人群/活动/触达/事件查询、applyAction 触达、callFunction 咨询函数）；禁止探索文件、代码或系统资源。
+            2. 只能调用运营工具（客户/人群/活动/触达/事件查询、applyAction 触达、callFunction 咨询函数）与 MCP 接入的外部工具（名称含 mcp_ 前缀），其余工具一概禁止；禁止探索文件、代码或系统资源。
             3. 用户说「继续/接着做/然后呢」等延续指令时，依据【会话回顾】中的最近目标与结果直接推进，不要重新探索。""";
 
     /** 会话记忆：最多回顾的轮次数。 */
@@ -73,7 +75,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     /** 落库摘要最大长度（完整回复截断，防 jsonb/token 膨胀）。 */
     private static final int SUMMARY_STORE_LIMIT = 600;
     /** 系统提示词版本（统计维度 prompt_info.sys_prompt_version，改提示词结构时递增）。 */
-    private static final String SYS_PROMPT_VERSION = "v5";
+    private static final String SYS_PROMPT_VERSION = "v6";
 
     private final String model;
     private final String apiKey;
@@ -84,8 +86,11 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private final double outputPrice;
     private final double cachedPrice;
     private final AgentToolRegistry toolRegistry;
+    private final McpClientRegistry mcpRegistry;
     private final AgentRunMapper runMapper;
     private final AgentToolCallMapper toolCallMapper;
+    /** 技能目录（技能仓库 Layer-2，配置驱动；默认仓库内 agentscope-skills/）。 */
+    private final String skillsDir;
     private final Map<String, HarnessAgent> sessions = new ConcurrentHashMap<>();
     /** 按 session 与 HarnessAgent 一一对应的统计采集器（stream 完成时 drain 落库）。 */
     private final Map<String, RunStatsMiddleware> statses = new ConcurrentHashMap<>();
@@ -98,7 +103,9 @@ public class AgentscopeAgentEngine implements AgentEngine {
             @Value("${ea.agentscope.pricing.input:0.00000014}") double inputPrice,
             @Value("${ea.agentscope.pricing.output:0.00000028}") double outputPrice,
             @Value("${ea.agentscope.pricing.cached:0.0000000028}") double cachedPrice,
+            @Value("${ea.agentscope.skills-dir:agentscope-skills}") String skillsDir,
             AgentToolRegistry toolRegistry,
+            McpClientRegistry mcpRegistry,
             AgentRunMapper runMapper,
             AgentToolCallMapper toolCallMapper) {
         this.model = model;
@@ -109,6 +116,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
         this.outputPrice = outputPrice;
         this.cachedPrice = cachedPrice;
         this.toolRegistry = toolRegistry;
+        this.mcpRegistry = mcpRegistry;
+        this.skillsDir = skillsDir;
         this.runMapper = runMapper;
         this.toolCallMapper = toolCallMapper;
     }
@@ -182,6 +191,15 @@ public class AgentscopeAgentEngine implements AgentEngine {
             for (AgentTool t : toolRegistry.forTenant(rc.tenantId(), rc.userId(), rc.role())) {
                 tk.registerAgentTool(t);
             }
+            // MCP（ADR-5 落地）：外部工具经 MCP 协议并入工具集，LLM 侧与本地工具无感知差异。
+            mcpRegistry.registerInto(tk);
+            // Skill（详细设计 4.2）：显式技能目录（Layer-2）并入 harness 技能仓库；workspace
+            // skills 目录（Layer-3/4）由 harness 默认装配，无需在此处理。
+            List<io.agentscope.core.skill.repository.AgentSkillRepository> skillRepos =
+                    skillsDir == null || skillsDir.isBlank() ? List.of()
+                            : java.nio.file.Files.isDirectory(Paths.get(skillsDir))
+                                    ? List.of(new FileSystemSkillRepository(Paths.get(skillsDir).toAbsolutePath()))
+                                    : List.of();
             RunStatsMiddleware statsMw = new RunStatsMiddleware(model, sid);
             statses.put(sid, statsMw);
             return HarnessAgent.builder()
@@ -191,6 +209,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
                     .model(resolveModel())
                     .workspace(Paths.get(workspace).toAbsolutePath())
                     .toolkit(tk)
+                    .skillRepositories(skillRepos)
                     .defaultSessionId(sid)
                     .middleware(statsMw)
                     .disableFilesystemTools()
@@ -199,6 +218,11 @@ public class AgentscopeAgentEngine implements AgentEngine {
                     .disableSubagents()
                     .build();
         });
+        // MCP 工具以 ToolBase 注册，默认权限语义为「非只读工具每次调用需人工授权」（ASK）；
+        // 无人值守运营引擎无 HITL 通道，ASK 会使工具调用悬空（发 RequireUserConfirmEvent +
+        // RequestStopEvent，工具实际不执行）。切 BYPASS：全部放行（库级 API，持久化到会话槽，
+        // 后续同会话调用保持）。
+        a.setPermissionMode(null, rc.sessionId(), io.agentscope.core.permission.PermissionMode.BYPASS);
         RunStatsMiddleware statsMw = statses.get(rc.sessionId());
         AtomicReference<String> finalReply = new AtomicReference<>();
         Map<String, StringBuilder> toolResults = new HashMap<>();
