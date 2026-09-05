@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { get, post } from '../api/http'
 import { subscribeRun, type SseEventName } from '../api/sse'
 import type { AgentRun } from '../api/types'
+import { renderMarkdown } from '../utils/markdown'
 
 defineOptions({ name: 'AgentWorkbenchView' })
 
@@ -16,6 +17,8 @@ interface ChatMessage {
   role: 'user' | 'assistant'
   text?: string
   blocks: Block[]
+  /** 该助手消息是否仍在 SSE 流式生成中（期间 reply 以纯文本展示，避免未闭合 markdown 闪烁）。 */
+  streaming?: boolean
 }
 
 const goal = ref('查询最近活跃客户并发送优惠')
@@ -94,6 +97,8 @@ function chainSuffix(chain: Record<string, unknown> | undefined, args: Record<st
 function pushEvent(name: SseEventName, data: unknown) {
   const d = (data ?? {}) as Record<string, unknown>
   if (name === 'done') {
+    const lastAsst = messages.value[messages.value.length - 1]
+    if (lastAsst?.role === 'assistant') lastAsst.streaming = false
     runStatus.value = 'DONE'
     running.value = false
     thinkingOpen.value = []
@@ -103,6 +108,8 @@ function pushEvent(name: SseEventName, data: unknown) {
     return
   }
   if (name === 'error') {
+    const lastAsst = messages.value[messages.value.length - 1]
+    if (lastAsst?.role === 'assistant') lastAsst.streaming = false
     runStatus.value = 'ERROR'
     running.value = false
     thinkingOpen.value = []
@@ -112,7 +119,7 @@ function pushEvent(name: SseEventName, data: unknown) {
   }
   let asst = messages.value[messages.value.length - 1]
   if (!asst || asst.role !== 'assistant') {
-    asst = { role: 'assistant', blocks: [] }
+    asst = { role: 'assistant', blocks: [], streaming: true }
     messages.value.push(asst)
   }
   const last = asst.blocks[asst.blocks.length - 1]
@@ -279,7 +286,7 @@ function pretty(data: unknown): string {
 
     <el-row :gutter="16" class="wb-row">
       <!-- 对话主区 -->
-      <el-col :span="15">
+      <el-col :span="15" class="col-chat">
         <div class="chat-card">
           <div v-if="messages.length === 0" class="chat-empty">
             <el-empty description="发起对话后，这里展示 Agent 的思考、工具调用与回复" />
@@ -302,7 +309,8 @@ function pretty(data: unknown): string {
                       </div>
                       <pre v-if="b.detail != null">{{ pretty(b.detail) }}</pre>
                     </div>
-                    <p v-else-if="b.kind === 'reply'" class="reply">{{ b.text }}</p>
+                    <p v-else-if="b.kind === 'reply' && m.streaming" class="reply">{{ b.text }}</p>
+                    <div v-else-if="b.kind === 'reply'" class="reply markdown-body" v-html="renderMarkdown(b.text)" />
                   </template>
                 </div>
               </div>
@@ -337,7 +345,7 @@ function pretty(data: unknown): string {
       </el-col>
 
       <!-- 历史 Run -->
-      <el-col :span="9">
+      <el-col :span="9" class="col-runs">
         <el-card shadow="never" header="历史 Run" class="runs-card">
           <div v-if="runs.length === 0" class="no-runs">暂无记录</div>
           <div v-for="r in runs" :key="r.id" class="run-item" @click="replay(r)">
@@ -360,6 +368,20 @@ function pretty(data: unknown): string {
 .wb {
   max-width: 1180px;
   margin: 0 auto;
+  /* 整屏对话：聊天区撑满剩余高度，输入条固定钉底（56=header，40=main 上下 padding） */
+  height: calc(100vh - 96px);
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+.wb-row {
+  flex: 1;
+  min-height: 0;
+}
+.col-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 .run-label {
   margin-bottom: 12px;
@@ -379,7 +401,8 @@ function pretty(data: unknown): string {
   box-shadow: var(--db-card-shadow);
   padding: 20px 20px 8px;
   margin-bottom: 14px;
-  min-height: 360px;
+  min-height: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
 }
@@ -391,10 +414,10 @@ function pretty(data: unknown): string {
   flex: 1;
 }
 .chat-box {
-  max-height: 56vh;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 4px 6px 12px;
-  flex: 1;
 }
 .msg-row {
   display: flex;
@@ -494,6 +517,112 @@ function pretty(data: unknown): string {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Markdown 渲染区：HTML 结构由 marked 生成，取消 pre-wrap 以避免多余空行。 */
+.markdown-body {
+  white-space: normal;
+  line-height: 1.7;
+}
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 14px 0 8px;
+  font-weight: 600;
+  color: #1d2129;
+}
+.markdown-body h1 { font-size: 18px; }
+.markdown-body h2 { font-size: 16px; }
+.markdown-body h3 { font-size: 15px; }
+.markdown-body h4 { font-size: 14px; }
+.markdown-body p {
+  margin: 6px 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+.markdown-body li {
+  margin: 3px 0;
+}
+.markdown-body code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef0f3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: #d63200;
+}
+.markdown-body pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #1d2129;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  padding: 0;
+  background: none;
+  color: #f2f3f5;
+  font-size: 13px;
+}
+.markdown-body blockquote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid #c9cdd4;
+  color: #4e5969;
+}
+.markdown-body a {
+  color: #3370ff;
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body table {
+  margin: 8px 0;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.6;
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 7px 10px;
+  border: 1px solid #e5e6eb;
+  text-align: left;
+  word-break: break-word;
+}
+.markdown-body th {
+  background: #f2f5fb;
+  font-weight: 600;
+  color: #1d2129;
+  white-space: nowrap;
+}
+.markdown-body tbody tr:nth-child(even) {
+  background: #fafbfd;
+}
+.markdown-body tbody tr:hover {
+  background: #f4f8ff;
+}
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.markdown-body hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid #e5e6eb;
+}
 .bubble.typing {
   display: inline-flex;
   align-items: center;
@@ -557,6 +686,23 @@ pre {
   font-size: 13px;
   text-align: center;
   padding: 24px 0;
+}
+.col-runs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.runs-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.runs-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
 }
 .run-item {
   padding: 10px 12px;
