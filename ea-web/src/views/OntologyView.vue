@@ -63,7 +63,6 @@ interface FlowEdge {
   d: string
   calls?: number
   avg_ms?: number
-  dead: boolean
   showLabel: boolean
   lx: number
   ly: number
@@ -177,7 +176,6 @@ const flow = computed(() => {
       d,
       calls: e.calls,
       avg_ms: e.avg_ms,
-      dead: !e.calls,
       // 相邻泳道短边与节点徽章重复 → 仅跨泳道长链边标调用数；标签落在行间隙带内，不压盒；对象边只做线型不标数
       showLabel: !!e.calls && runW >= 80 && !e.to.startsWith('obj:'),
       lx: labelX,
@@ -495,10 +493,13 @@ onMounted(() => {
           v-for="e in flow.edges"
           :key="e.d + e.lx"
           class="edge-line"
-          :class="{ dead: e.dead, 'trace-active': traceEdges.has(e.from + '|' + e.to) }"
+          :class="{ dead: !traceEdges.has(e.from + '|' + e.to), 'trace-active': traceEdges.has(e.from + '|' + e.to) }"
           :d="e.d"
-          :marker-end="e.dead ? 'url(#arr-dead)' : 'url(#arr)'"
+          :marker-end="traceEdges.has(e.from + '|' + e.to) ? 'url(#arr)' : 'url(#arr-dead)'"
         />
+        <template v-for="e in flow.edges" :key="'f' + e.d + e.lx">
+          <path v-if="traceEdges.has(e.from + '|' + e.to)" class="edge-line-flow" :d="e.d" />
+        </template>
         <text
           v-for="e in flow.edges.filter((x) => x.showLabel)"
           :key="'l' + e.d + e.lx"
@@ -751,9 +752,16 @@ onMounted(() => {
 .edge-line.trace-active {
   stroke: #d81e06;
   stroke-width: 2.4;
-  stroke-dasharray: 10 7;
+  stroke-dasharray: none;
   stroke-linecap: butt;
   opacity: 1;
+}
+.edge-line-flow {
+  fill: none;
+  stroke: #ffb3ab;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-dasharray: 10 7;
   animation: trace-flow 0.7s linear infinite;
 }
 @keyframes trace-flow {
