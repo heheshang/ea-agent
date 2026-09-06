@@ -3,6 +3,7 @@ package com.eaagent.app.web;
 import com.eaagent.api.dto.EventImportRequest;
 import com.eaagent.common.Result;
 import com.eaagent.common.TenantContext;
+import com.eaagent.common.Texts;
 import com.eaagent.ontology.model.EventEntity;
 import com.eaagent.ontology.service.EventService;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -46,6 +47,6 @@ public class EventController {
     private String eventDedup(EventImportRequest req) {
         String key = req.getCustomerId() + "|" + req.getEventType() + "|"
                 + (req.getPayload() == null ? "" : req.getPayload().toString());
-        return "sha:" + Integer.toHexString(key.hashCode());
+        return "sha:" + Texts.sha256Hex(key);
     }
 }

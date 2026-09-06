@@ -99,7 +99,10 @@ public class EventConsumer {
                 Map<String, Object> rule = c.getTriggerRule() == null ? Map.of() : c.getTriggerRule();
                 if (eventType.equals(rule.get("event_type"))) {
                     matched++;
-                    ActionContext ctx = ActionContext.of(tenantId, null, Actors.SYSTEM, "evt:" + recordId);
+                    // 请求键按活动隔离：同一事件可能匹配多个 RUNNING 活动，
+                    // 若共用同一 requestId，后面的活动会被 sendTouch 幂等闸当作重放跳过。
+                    String actionRequestId = "evt:" + recordId + ":c:" + c.getId();
+                    ActionContext ctx = ActionContext.of(tenantId, null, Actors.SYSTEM, actionRequestId);
                     Map<String, Object> payload = toStringKeyMap(f);
                     String nested = payload.get("event_payload") == null ? null : String.valueOf(payload.get("event_payload"));
                     if (nested != null && !nested.isBlank()) {
@@ -116,7 +119,7 @@ public class EventConsumer {
                             "event_payload", payload));
                     // 多通道编排活动走 DAG 执行器（事件驱动逐节点推进）；否则原单通道 sendTouch 管线
                     if (c.getWorkflow() != null && !c.getWorkflow().isEmpty()) {
-                        workflowExecutor.execute(tenantId, c, eventType, payload);
+                        workflowExecutor.execute(tenantId, c, eventType, payload, actionRequestId);
                     } else {
                         actionRegistry.get("sendTouch").execute(ctx, req);
                     }

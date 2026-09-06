@@ -56,10 +56,11 @@ public class WorkflowExecutor {
     /**
      * 执行一次事件触发的 DAG 编排。非 DAG 活动（workflow 空）返回 {workflow:false}，由调用方走原管线。
      *
-     * @return {workflow:true, campaign_id, total_customers, nodes:[{id,matched,sent,skipped,failed,unsubscribed}], message}
+     * @return {workflow:true, campaign_id, total_customers, nodes:[{id,matched,sent,skipped,failed,unsubscribed,frequency_limited}], message}
      */
     public Map<String, Object> execute(Long tenantId, CampaignEntity campaign,
-                                       String eventType, Map<String, Object> eventPayload) {
+                                       String eventType, Map<String, Object> eventPayload,
+                                       String actionRequestId) {
         List<Map<String, Object>> nodes = campaign.getWorkflow();
         if (nodes == null || nodes.isEmpty()) {
             return Map.of("workflow", false);
@@ -95,18 +96,21 @@ public class WorkflowExecutor {
         // 历史投递状态：每客户每节点最近一次状态（(campaign, workflow_node) 关联）
         Map<Long, Map<String, String>> state = loadHistory(tenantId, campaign.getId(), nodeById.keySet());
 
-        // 节点统计
+        // 节点统计：[matched, sent, skipped, failed, unsubscribed, frequency_limited]
         Map<String, int[]> stats = new LinkedHashMap<>();
         for (String id : nodeById.keySet()) {
-            stats.put(id, new int[5]); // [matched, sent, skipped, failed, unsubscribed]
+            stats.put(id, new int[6]);
         }
         Map<Long, Set<String>> visited = new HashMap<>();
         Map<Long, TemplateEntity> tplCache = new HashMap<>();
+        // 频控上限按 channel 缓存一次（动作级），避免逐客户查库
+        Map<String, Long> fcCache = new HashMap<>();
 
         for (CustomerEntity c : customers) {
             Set<String> seen = visited.computeIfAbsent(c.getId(), k -> new HashSet<>());
             for (Map<String, Object> root : roots) {
-                dfs(tenantId, campaign, c, root, nodeById, nexts, state, seen, stats, eventType, eventPayload, tplCache);
+                dfs(tenantId, campaign, c, root, nodeById, nexts, state, seen, stats,
+                        eventType, eventPayload, tplCache, fcCache, actionRequestId);
             }
         }
 
@@ -120,6 +124,7 @@ public class WorkflowExecutor {
             m.put("skipped", s[2]);
             m.put("failed", s[3]);
             m.put("unsubscribed", s[4]);
+            m.put("frequency_limited", s[5]);
             nodeOut.add(m);
         }
         Map<String, Object> out = new LinkedHashMap<>();
@@ -136,7 +141,8 @@ public class WorkflowExecutor {
                      Map<String, Map<String, Object>> nodeById, Map<String, List<String>> nexts,
                      Map<Long, Map<String, String>> state, Set<String> seen,
                      Map<String, int[]> stats, String eventType, Map<String, Object> eventPayload,
-                     Map<Long, TemplateEntity> tplCache) {
+                     Map<Long, TemplateEntity> tplCache, Map<String, Long> fcCache,
+                     String actionRequestId) {
         String id = String.valueOf(node.get("id"));
         if (!seen.add(id)) {
             return; // 防御环/重复路径
@@ -162,11 +168,17 @@ public class WorkflowExecutor {
         String channel = String.valueOf(node.get("channel"));
         Long tplId = node.get("template_id") instanceof Number n
                 ? n.longValue() : Long.valueOf(String.valueOf(node.get("template_id")));
-        DeliveryEntity d = sendTouchAction.sendOneCustomer(tenantId, campaign, c, channel, tplId,
-                id, eventType, eventPayload, tplCache);
+        SendTouchAction.SendOutcome oc = sendTouchAction.sendOneCustomer(tenantId, campaign,
+                new SendTouchAction.SendTarget(c, channel, tplId, id, eventType, eventPayload),
+                tplCache, fcCache, actionRequestId);
+        DeliveryEntity d = oc.delivery();
         if (d == null) {
+            if (oc.skip() == SendTouchAction.SendOutcome.Skip.FREQUENCY_LIMITED) {
+                stats.get(id)[5]++;
+            } else {
+                stats.get(id)[4]++;
+            }
             st.put(id, DeliveryEntity.STATUS_UNSUBSCRIBED);
-            stats.get(id)[4]++;
             return;
         }
         st.put(id, d.getStatus());
@@ -174,7 +186,7 @@ public class WorkflowExecutor {
             stats.get(id)[1]++;
             for (String to : nexts.get(id)) {
                 dfs(tenantId, campaign, c, nodeById.get(to), nodeById, nexts, state, seen,
-                        stats, eventType, eventPayload, tplCache);
+                        stats, eventType, eventPayload, tplCache, fcCache, actionRequestId);
             }
         } else {
             stats.get(id)[3]++;

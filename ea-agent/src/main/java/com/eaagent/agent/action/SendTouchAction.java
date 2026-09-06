@@ -14,11 +14,13 @@ import com.eaagent.ontology.action.ActionMeta;
 import com.eaagent.ontology.action.ActionRequest;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
+import com.eaagent.ontology.mapper.ChannelConfigMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
 import com.eaagent.ontology.mapper.DeliveryMapper;
 import com.eaagent.ontology.mapper.TemplateMapper;
 import com.eaagent.ontology.mapper.UnsubscribeMapper;
 import com.eaagent.ontology.model.CampaignEntity;
+import com.eaagent.ontology.model.ChannelConfigEntity;
 import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.DeliveryEntity;
 import com.eaagent.ontology.model.TemplateEntity;
@@ -28,11 +30,13 @@ import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * sendTouch（10.4）：组合式发送管线 —— 人群派生 → 逐客户：退订检查 →
@@ -47,6 +51,7 @@ public class SendTouchAction extends AbstractAction {
     private final CustomerMapper customerMapper;
     private final DeliveryMapper deliveryMapper;
     private final UnsubscribeMapper unsubscribeMapper;
+    private final ChannelConfigMapper channelConfigMapper;
     private final AudienceSnapshotService snapshotService;
     private final ChannelAdapterRegistry channelRegistry;
     private final TemplateRoutingService templateRoutingService;
@@ -55,6 +60,7 @@ public class SendTouchAction extends AbstractAction {
                            StringRedisTemplate redis, CampaignMapper campaignMapper,
                            TemplateMapper templateMapper, CustomerMapper customerMapper,
                            DeliveryMapper deliveryMapper, UnsubscribeMapper unsubscribeMapper,
+                           ChannelConfigMapper channelConfigMapper,
                            AudienceSnapshotService snapshotService,
                            ChannelAdapterRegistry channelRegistry,
                            TemplateRoutingService templateRoutingService) {
@@ -64,6 +70,7 @@ public class SendTouchAction extends AbstractAction {
         this.customerMapper = customerMapper;
         this.deliveryMapper = deliveryMapper;
         this.unsubscribeMapper = unsubscribeMapper;
+        this.channelConfigMapper = channelConfigMapper;
         this.snapshotService = snapshotService;
         this.channelRegistry = channelRegistry;
         this.templateRoutingService = templateRoutingService;
@@ -95,12 +102,20 @@ public class SendTouchAction extends AbstractAction {
         List<CustomerEntity> customers = memberIds.isEmpty() ? List.of()
                 : customerMapper.selectList(new QueryWrapper<CustomerEntity>()
                         .eq(CustomerEntity.COL_TENANT_ID, tenantId).in(CustomerEntity.COL_ID, memberIds));
-        int sent = 0, unsubscribed = 0, failed = 0;
+        int sent = 0, unsubscribed = 0, frequencySkipped = 0, failed = 0;
+        // 频控上限按 channel 缓存一次（动作级），避免逐客户查库
+        Map<String, Long> fcCache = new HashMap<>();
         for (CustomerEntity c : customers) {
-            DeliveryEntity d = sendOneCustomer(tenantId, campaign, c, campaign.getChannel(), null,
-                    null, eventType, eventPayload, tplCache);
+            SendOutcome oc = sendOneCustomer(tenantId, campaign,
+                    new SendTarget(c, campaign.getChannel(), null, null, eventType, eventPayload),
+                    tplCache, fcCache, ctx.requestId());
+            DeliveryEntity d = oc.delivery();
             if (d == null) {
-                unsubscribed++;
+                if (oc.skip() == SendOutcome.Skip.FREQUENCY_LIMITED) {
+                    frequencySkipped++;
+                } else {
+                    unsubscribed++;
+                }
             } else if (DeliveryEntity.STATUS_SENT.equals(d.getStatus())
                     || DeliveryEntity.STATUS_DELIVERED.equals(d.getStatus())) {
                 sent++;
@@ -114,34 +129,74 @@ public class SendTouchAction extends AbstractAction {
         out.put("total_customers", customers.size());
         out.put("sent", sent);
         out.put("skipped_unsubscribed", unsubscribed);
+        out.put("skipped_frequency", frequencySkipped);
         out.put("failed", failed);
         return out;
     }
 
     /**
-     * 单客户发送（普通活动与多通道编排 DAG 共用）：
-     * - workflowNode 非空 → DAG 节点发送：按节点 channel 取适配器、按 template_id 直定模板，且模板必须
-     *   APPROVED（模板未审核不可发，E-13002）；跳过 templateRouting。
+     * 单客户发送目标：普通活动与多通道编排 DAG 共用的「逐客户差异参数」。
+     * - workflowNode 非空 → DAG 节点发送：按 target.channel 取适配器、按 target.templateId 直定模板，
+     *   且模板必须 APPROVED（模板未审核不可发，E-13002）；跳过 templateRouting。
      * - 否则按活动通道 + templateRouting 解析（原发送管线）。
-     * delivery 落库（request_id 幂等；DAG 标记 workflow_node）→ 通道发送：成功由适配器回写 SENT；
-     * 异常置 FAILED（error 截断 200）后返回。退订跳过不落库，返回 null。
+     * 活动/租户/模板缓存/动作请求键等调用共享上下文仍需 sendOneCustomer 单独入参。
      */
-    public DeliveryEntity sendOneCustomer(Long tenantId, CampaignEntity campaign, CustomerEntity c,
-                                          String channel, Long templateId, String workflowNode,
-                                          String eventType, Map<String, Object> eventPayload,
-                                          Map<Long, TemplateEntity> tplCache) {
+    public record SendTarget(CustomerEntity customer, String channel, Long templateId,
+                             String workflowNode, String eventType, Map<String, Object> eventPayload) {
+        public SendTarget {
+            eventPayload = eventPayload == null ? Map.of() : eventPayload;
+        }
+    }
+
+    /** 单客户发送结果：delivery 非空 = 落库并发送（或幂等命中既有记录）；null = 跳过（不落库）。 */
+    public record SendOutcome(DeliveryEntity delivery, Skip skip) {
+        public static SendOutcome of(DeliveryEntity d) {
+            return new SendOutcome(d, null);
+        }
+
+        public static SendOutcome skipped(Skip skip) {
+            return new SendOutcome(null, skip);
+        }
+
+        public enum Skip { UNSUBSCRIBED, FREQUENCY_LIMITED }
+    }
+
+    /**
+     * 单客户发送（普通活动与多通道编排 DAG 共用，见 {@link SendTarget}）：
+     * delivery 落库（request_id 幂等；DAG 标记 workflow_node）→ 通道发送：成功由适配器回写 SENT；
+     * 异常置 FAILED（error 截断 200）。退订/频控跳过不落库，返回 SendOutcome（delivery=null）。
+     */
+    public SendOutcome sendOneCustomer(Long tenantId, CampaignEntity campaign, SendTarget target,
+                                       Map<Long, TemplateEntity> tplCache, Map<String, Long> fcCache,
+                                       String actionRequestId) {
+        CustomerEntity c = target.customer();
+        String channel = target.channel();
+        String workflowNode = target.workflowNode();
         // 1. 退订检查
         if (isUnsubscribed(tenantId, c, channel)) {
-            return null;
+            return SendOutcome.skipped(SendOutcome.Skip.UNSUBSCRIBED);
         }
         ChannelAdapter adapter = channelRegistry.get(channel);
         adapter.validate(tenantId, Map.of());
         // 2. 模板解析：DAG 节点直定模板（须 APPROVED）；普通活动走路由
-        TemplateEntity tpl = resolveTemplate(tenantId, campaign, channel, templateId, workflowNode,
-                eventType, eventPayload, c, tplCache);
+        TemplateEntity tpl = resolveTemplate(tenantId, campaign, channel, target.templateId(), workflowNode,
+                target.eventType(), target.eventPayload(), c, tplCache);
         // 3. delivery 落库（request_id 幂等）
+        String requestId = deliveryRequestId(tenantId, campaign.getId(), c.getId(), channel, workflowNode, actionRequestId);
+        DeliveryEntity existing = deliveryMapper.selectOne(new QueryWrapper<DeliveryEntity>()
+                .eq(DeliveryEntity.COL_TENANT_ID, tenantId)
+                .eq(DeliveryEntity.COL_REQUEST_ID, requestId)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return SendOutcome.of(existing);
+        }
+        // 2.5 频控闸（E-13004）：channel_config.frequency_limit.max_per_day 每日每客户每通道上限；
+        // 超限跳过不落库（幂等命中已 return，重放不重复计数）。未配置/<=0 → 不限（保持原行为）。
+        if (isFrequencyLimited(tenantId, c.getId(), channel, fcCache)) {
+            return SendOutcome.skipped(SendOutcome.Skip.FREQUENCY_LIMITED);
+        }
         DeliveryEntity d = new DeliveryEntity();
-        d.setRequestId(UUID.randomUUID().toString());
+        d.setRequestId(requestId);
         d.setTenantId(tenantId);
         d.setCampaignId(campaign.getId());
         d.setCustomerId(c.getId());
@@ -152,10 +207,18 @@ public class SendTouchAction extends AbstractAction {
         d.setWorkflowNode(workflowNode);
         d.setCreatedAt(Instant.now());
         d.setUpdatedAt(Instant.now());
-        deliveryMapper.insert(d);
+        try {
+            deliveryMapper.insert(d);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            // 并发相同请求：唯一约束兜底，返回已存在记录，避免重复发送
+            return SendOutcome.of(deliveryMapper.selectOne(new QueryWrapper<DeliveryEntity>()
+                    .eq(DeliveryEntity.COL_TENANT_ID, tenantId)
+                    .eq(DeliveryEntity.COL_REQUEST_ID, requestId)
+                    .last("LIMIT 1")));
+        }
         // 4. 通道发送（console 降级：回写 SENT）
         String to = pickContact(c, channel);
-        String content = render(tpl.getContent(), tpl.getVars(), c, eventPayload);
+        String content = render(tpl.getContent(), tpl.getVars(), c, target.eventPayload());
         try {
             adapter.send(new DeliveryMessage(d.getId(), tenantId, c.getId(), channel, to, content));
             // 适配器同步回写 DB（SENT/msg_id）；重查以让内存状态与库一致（DAG 前驱判定依赖真实状态）
@@ -169,7 +232,68 @@ public class SendTouchAction extends AbstractAction {
             d.setUpdatedAt(Instant.now());
             deliveryMapper.updateById(d);
         }
-        return d;
+        return SendOutcome.of(d);
+    }
+
+    /**
+     * 频控闸：channel_config.frequency_limit.max_per_day 每日每客户每通道上限（E-13004）。
+     * 按日滚动计数 Redis 键 ea:fc:{tenant}:{channel}:{customerId}:{date}：
+     * 首次计数设当日剩余 TTL；超过上限 → true（跳过不落库）。未配置/<=0 → false（不限频）。
+     * 上限值经 fcCache 按 channel 缓存一次（动作级），避免逐客户重复查库。
+     */
+    private boolean isFrequencyLimited(Long tenantId, Long customerId, String channel,
+                                       Map<String, Long> fcCache) {
+        Long maxPerDay = fcCache.get(channel);
+        if (maxPerDay == null) {
+            maxPerDay = loadMaxPerDay(tenantId, channel);
+            fcCache.put(channel, maxPerDay);
+        }
+        if (maxPerDay == null || maxPerDay <= 0) {
+            return false; // 未配置上限 → 原行为（不限频，不计数）
+        }
+        String key = fcKey(tenantId, channel, customerId);
+        Long n = redis.opsForValue().increment(key);
+        if (n != null && n == 1L) {
+            // 按日滚动：当日首次计数 → 剩余时间 TTL
+            redis.expire(key, Duration.between(Instant.now(), LocalDate.now().plusDays(1).atStartOfDay(ZoneId.systemDefault())));
+        }
+        return n != null && n > maxPerDay;
+    }
+
+    /** 读取频道频控上限（max_per_day）；无频道配置 / 无该字段 / 非法值 → null（不限频）。 */
+    private Long loadMaxPerDay(Long tenantId, String channel) {
+        ChannelConfigEntity cfg = channelConfigMapper.selectOne(new QueryWrapper<ChannelConfigEntity>()
+                .eq(ChannelConfigEntity.COL_TENANT_ID, tenantId)
+                .eq(ChannelConfigEntity.COL_CHANNEL, channel)
+                .last("LIMIT 1"));
+        if (cfg == null || cfg.getFrequencyLimit() == null) {
+            return null;
+        }
+        Object v = cfg.getFrequencyLimit().get("max_per_day");
+        if (v instanceof Number num) {
+            return num.longValue();
+        }
+        if (v instanceof String s) {
+            try {
+                return Long.parseLong(s);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** 频控计数键（与详细设计 9.5 一致）：ea:fc:{tenant}:{channel}:{customerId}:{yyyy-MM-dd} */
+    static String fcKey(Long tenantId, String channel, Long customerId) {
+        return "ea:fc:" + tenantId + ":" + channel + ":" + customerId + ":" + LocalDate.now();
+    }
+
+    /** 每客户确定性幂等键：动作请求 + 活动/客户/通道/节点，重放同一请求不会重复创建 delivery。 */
+    private String deliveryRequestId(Long tenantId, Long campaignId, Long customerId, String channel,
+                                     String workflowNode, String actionRequestId) {
+        String key = tenantId + "|" + campaignId + "|" + customerId + "|" + channel + "|"
+                + (workflowNode == null ? "" : workflowNode) + "|" + (actionRequestId == null ? "" : actionRequestId);
+        return Texts.sha256Hex(key);
     }
 
     private TemplateEntity resolveTemplate(Long tenantId, CampaignEntity campaign, String channel,

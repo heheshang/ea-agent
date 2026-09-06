@@ -6,6 +6,7 @@
 
 ### Added
 
+- **频道频控闸（E-13004，发送管线缺失闭环）**：`sendOneCustomer` 发送前置频控检查——每次触达对 `ea:fc:{tenant}:{channel}:{customerId}:{date}` 做 Redis INCR 按日计数（首次 INCR 后对该键设置滚动 TTL 至当日 24:00，避免隔日残留键膨胀），超过 `channel_config.frequency_limit.max_per_day`（每租户每通道每日上限）则跳过发送、不计投递行；上限未配置 / 非数字值 → 不限频且**不触碰 Redis**（零额外延迟）。跳过结果以 `SendOutcome.skip = FREQUENCY_LIMITED` 显式返回（不落 delivery 行）；`WorkflowExecutor` 计数并入现有输出（`frequency_limited` 字段）与 DAG 递归路径（DAG 循环边界隐患的频控闭环，此前超限客户仍会沿 `next` 递归下钻消费其他通道）。
 - **agent 自动建模板 + 活动多通道 DAG 编排 + 会话审批门控**：
   - **自动建模板**：`createTemplate` Action 直建模板（内容 `{{...}}` 变量提取为 `vars`，产物即 PENDING 进入人工审核流——见 Fixed「模板审核流恢复」）；`createCampaign` 校验 template_id 缺失/不存在报可读错误并提示先建模板，顶层 channel/template_id 缺省取 workflow 首节点。
   - **多通道编排 DAG**：`campaign.workflow` jsonb 节点数组（V13 迁移，节点 `{id,channel,template_id,condition,next}`）+ `delivery.workflow_node` 溯源列；`WorkflowCodec.validate` 校验（唯一 id、DAG 无环、依赖可达）、`WorkflowConditionEvaluator`（event/customer/prev 三组 8 操作符）、`WorkflowExecutor` 每客户拓扑序 DFS——根节点起，前驱任一非 SENT/DELIVERED 跳过，条件命中 `sendOneCustomer` 发送、成功沿 next 递归；`EventConsumer` 消费命中判 workflow 非空分流（空则原 sendTouch 管线零回归）；投递日志与前端列表/看板呈现「DAG · N」徽标、投递「节点」列、编辑表单 workflow textarea。
@@ -40,6 +41,7 @@
 
 ### Changed
 
+- **`sendOneCustomer` 参数对象化重构**：签名 `sendOneCustomer(tenantId, campaign, target, tplCache, fcCache, actionRequestId)` 用 `SendTarget(customer, channel, templateId, workflowNode, eventType, eventPayload)` 收拢 6 个触达目标参量（消除 `resolveTemplate` 分支对 templateMapper 的隐式依赖、调用点按字段自解释）；返回值改为 `SendOutcome(delivery, skip)` —— 退订/频控跳过显式标记（`UNSUBSCRIBED`/`FREQUENCY_LIMITED`），调用方不必靠「delivery 为 null」猜原因；`doExecute` 输出新增 `skipped_frequency` 计数。
 - **知识库关系图谱（V15 类型化关系边 + 力导图）**：新增 `knowledge_link` 表（V15 迁移——`source_id`/`target_id` 双 FK ON DELETE CASCADE、`relation_type` ∈ related/supports/refines/conflicts，`UNIQUE(tenant_id, source_id, target_id, relation_type)` + `CHECK source_id <> target_id`，与既有 `supersedes_id` 取代链并列：生命周期语义仍由 supersedes 表达、trace 接口不变）。后端 `GET /api/knowledge/graph` 合并返回「本体节点 + 取代链 + 类型化边」（`KnowledgeGraphResponse`：`nodes` 全量 KnowledgeEntity、`edges` 含 `linkId`，取代边 `relation=supersedes`）；`POST /api/knowledge/links` / `DELETE /api/knowledge/links/{id}` 管理关系——校验缺参、自环、未知类型、端点不存在、重复与租户越权（E-10001/E-12007）。前端知识库页新增「🕸 关系图谱」弹窗（`KnowledgeGraph.vue` 力导向 SVG：斥力/弹簧/引力/阻尼 320 轮迭代静态收敛，节点按 record_type 着色、关系边区分线色与虚线样式、取代链节点生命周期环标注、图例 + 点击节点信息卡）。种子数据补 5 条关系边（支撑/冲突/相关/细化），图谱即插即用。
 - **知识库种子扩充（V14 本体演示，幂等改为逐条按标题）**：`SeedDataInitializer.seedKnowledge` 由「该租户有任意条目即整体跳过」改为**逐条按 `(tenant_id, title)` 判断**——存量条目不重插、新条目可增量补入（既有 demo 库启动后也能拿到新数据，不再依赖全表为空）。新增 9 条测试条目覆盖 V14 本体全维度：7 类 record_type 齐全（fact 客户画像字段 / constraint 静默时段 / decision 短信通道接入 / rationale 频控上限理由 / lesson 人群规则过宽教训 / anti_pattern 忽略退订群发 / rule 触发窗 v1、v2），生命周期含 superseded（触发窗 v1）与 obsolete（灰度/AB 历史决策，检索默认不命中）各一条，以及取代链「触发窗 v2 → v1」（`supersedes_id` + trace 接口可回放最旧→最新）；内容与系统真实行为对齐（退订/频控/audience_snapshot/通道降级/灰度 AB 已下线），落库后即时回填 pgvector embedding，检索试预览与 Agent 注入可直接命中。
 
