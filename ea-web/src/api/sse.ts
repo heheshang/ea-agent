@@ -6,7 +6,6 @@ export type SseEventName =
   | 'plan'
   | 'thinking_delta'
   | 'tool_call'
-  | 'approval_required'
   | 'action_result'
   | 'text_delta'
   | 'done'
@@ -18,7 +17,6 @@ const EVENT_NAMES: SseEventName[] = [
   'plan',
   'thinking_delta',
   'tool_call',
-  'approval_required',
   'action_result',
   'text_delta',
   'done',

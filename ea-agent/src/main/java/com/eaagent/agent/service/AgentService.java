@@ -48,7 +48,8 @@ public class AgentService {
 
     /**
      * 同会话在途 run（防重用）：NEW/PLANNING/EXECUTING/OBSERVING 视为执行链上未终结，
-     * 会话仍被占用；AWAITING_APPROVAL 等待人工审批不占用执行线程，放行新提交。
+     * 会话仍被占用；会话 HITL 挂起不落 run 状态（挂起时 run 已 COMPLETED，Redis 挂起项跨轮存续），
+     * 用户确认/拒绝后的下一条消息可正常开新 run。
      */
     AgentRunEntity findInflightRun(Long tenantId, String sessionId) {
         return runMapper.selectOne(new QueryWrapper<AgentRunEntity>()
@@ -68,7 +69,7 @@ public class AgentService {
     /** 建 run（POST /api/agent/chat）：NEW 落库，清扫历史步骤缓存。 */
     public AgentRunEntity startRun(Long tenantId, Long userId, String role, String goal, String sessionId) {
         // 同会话防重（修复：挂起 run 占住会话时用户重复提交会生成重复 run——实证 116/117 同 goal 双 run；
-        // 拒绝让用户重发而非静默产生第二个在途 run；AWAITING_APPROVAL 等待人工审批不占用执行，放行）
+        // 拒绝让用户重发而非静默产生第二个在途 run；会话 HITL 挂起时 run 已完结不占用执行，用户确认/拒绝可正常开新 run）
         AgentRunEntity inflight = findInflightRun(tenantId, sessionId);
         if (inflight != null) {
             log.warn("start rejected tenantId={} sessionId={} reason=E-15002 inflight runId={} status={}",
@@ -132,35 +133,6 @@ public class AgentService {
         execute(run, emitter);
     }
 
-    /** 审批（4.4）：AWAITING_APPROVAL → EXECUTING / CANCELLED，记录 decision。 */
-    public Map<String, Object> approve(Long runId, boolean approved, Long reviewerId, String reviewerRole) {
-        AgentRunEntity run = getRun(runId);
-        if (!AgentRunEntity.STATUS_AWAITING_APPROVAL.equals(run.getStatus())) {
-            throw new BizException(ErrorCode.STATE_NOT_ALLOWED);
-        }
-        List<Map<String, Object>> decisions = run.getDecisions() == null ? new ArrayList<>() : new ArrayList<>(run.getDecisions());
-        Map<String, Object> d = new LinkedHashMap<>();
-        d.put("type", "approval");
-        d.put("approved", approved);
-        d.put("reviewer_id", reviewerId);
-        d.put("reviewer_role", reviewerRole);
-        d.put("at", Instant.now().toString());
-        decisions.add(d);
-        String newStatus = approved ? AgentRunEntity.STATUS_EXECUTING : AgentRunEntity.STATUS_CANCELLED;
-        log.info("approve runId={} approved={} reviewerId={} targetStatus={}",
-                runId, approved, reviewerId, newStatus);
-        // 靶向更新：只改状态/审批记录/更新时间，避免 updateById 用旧快照覆写统计列（usage/tokens_used/cost）
-        runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
-                .eq(AgentRunEntity.COL_ID, runId)
-                .set(AgentRunEntity.COL_STATUS, newStatus)
-                .set(AgentRunEntity.COL_DECISIONS, decisions,
-                        "typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler")
-                .set(AgentRunEntity.COL_UPDATED_AT, Instant.now()));
-        return Map.of("run_id", runId, "status", newStatus);
-    }
-
-    // ---------- 内部 ----------
-
     private void execute(AgentRunEntity run, SseEmitter emitter) {
         long runId = run.getId();
         long startNanos = System.nanoTime();
@@ -216,8 +188,6 @@ public class AgentService {
                     plan.addAll(steps);
                 }
             }
-            // 审批门控（4.4）：引擎发 approval_required → 置 AWAITING_APPROVAL，等待人工审批
-            case "approval_required" -> run.setStatus(AgentRunEntity.STATUS_AWAITING_APPROVAL);
             case "tool_call" -> run.setStatus(AgentRunEntity.STATUS_EXECUTING);
             case "action_result" -> run.setStatus(AgentRunEntity.STATUS_OBSERVING);
             case "thinking_delta", "text_delta" -> run.setStatus(AgentRunEntity.STATUS_EXECUTING);

@@ -86,12 +86,13 @@ public class AgentToolRegistry {
         return forTenant(tenantId, userId, role, null);
     }
 
-    /** 会话级工具集：sessionId 参与建议模式门控（suggest 下写动作挂起待确认，见 ApplyAction.execute）。 */
+    /** 会话级工具集：sessionId 参与会话 HITL 门控（suggest 下写动作挂起，用户在聊天内确认/拒绝后由 approveAction 放行）。 */
     public List<AgentTool> forTenant(Long tenantId, Long userId, String role, String sessionId) {
         return List.of(
                 new QueryCustomers(tenantId, userId, role), new QueryAudience(tenantId, userId, role),
                 new GetCampaign(tenantId, userId, role), new QueryDelivery(tenantId, userId, role),
                 new QueryEvents(tenantId, userId, role), new ApplyAction(tenantId, userId, role, sessionId),
+                new ApproveAction(tenantId, userId, role, sessionId),
                 new CallFunction(tenantId, userId, role));
     }
 
@@ -180,6 +181,10 @@ public class AgentToolRegistry {
 
     private static Map<String, Object> pInt(String desc) {
         return Map.of("type", "integer", "description", desc);
+    }
+
+    private static Map<String, Object> pBool(String desc) {
+        return Map.of("type", "boolean", "description", desc);
     }
 
     // ---------- 9 + 1 工具 ----------
@@ -366,7 +371,7 @@ public class AgentToolRegistry {
                 log.warn("applyAction rejected tenantId={} action={} reason={}", tenantId, action, ruleErr);
                 return Map.of("ok", false, "error", ruleErr);
             }
-            // 建议模式门控：会话模式为 suggest 且属写动作 → 不入库执行，挂起待确认
+            // 会话 HITL 门控：会话模式为 suggest 且属写动作 → 不入库执行，挂起待用户在聊天内确认
             if (sessionId != null && WRITE_ACTIONS.contains(action) && isSuggestMode()) {
                 return gatePending(action, norm);
             }
@@ -389,7 +394,7 @@ public class AgentToolRegistry {
             }
         }
 
-        /** 挂起门控：写动作 rightPush JSON entry，返回 PENDING_APPROVAL（LLM 向用户说明等待确认，run 正常 COMPLETED）。 */
+        /** 挂起门控：写动作 rightPush JSON entry，返回 PENDING_APPROVAL（LLM 向用户说明，待其回复确认/拒绝后调 approveAction 放行，run 正常 COMPLETED）。 */
         private Map<String, Object> gatePending(String action, Map<String, Object> norm) {
             String approvalId = UUID.randomUUID().toString();
             Map<String, Object> entry = new java.util.LinkedHashMap<>();
@@ -415,14 +420,99 @@ public class AgentToolRegistry {
             out.put("approval_id", approvalId);
             out.put("action", action);
             out.put("args", norm);
-            out.put("message", "建议模式：写动作已挂起，请在聊天中确认后执行");
+            out.put("message", "建议模式：写动作已挂起，请在聊天中回复「确认执行」或「取消」，我确认后立即执行");
+            return out;
+        }
+    }
+
+    /** 会话 HITL 放行：确认/拒绝挂起的写动作（建议模式）。applyAction 挂起后，用户明确回复确认/拒绝时由 LLM 调用；
+     *  仅动作发起者本人、当前会话可操作；确认后以挂起时的原身份执行原动作，拒绝则不执行并移除挂起项。 */
+    class ApproveAction extends BaseTool {
+        private final String sessionId;
+
+        ApproveAction(Long tenantId, Long userId, String role, String sessionId) {
+            super(tenantId, userId, role, "approveAction",
+                    "确认或拒绝会话中挂起的写动作（建议模式 HITL）。applyAction 返回 PENDING_APPROVAL 后，用户明确回复「确认执行」时调用 approved=true 放行原动作（真实业务执行，参数沿用挂起时的值）；用户明确拒绝时调用 approved=false 取消。仅动作发起者本人、当前会话内可操作；用户未明确表态时严禁调用。",
+                    schema(Map.of("approval_id", pStr("挂起动作的审批号（applyAction 返回的 approval_id）"),
+                                    "approved", pBool("true=确认执行挂起动作 / false=拒绝并取消")),
+                            List.of("approval_id", "approved")));
+            this.sessionId = sessionId;
+        }
+
+        @Override
+        protected Map<String, Object> execute(Map<String, Object> input) {
+            String approvalId = String.valueOf(input.get("approval_id"));
+            boolean approved = Boolean.parseBoolean(String.valueOf(input.get("approved")));
+            List<String> raw = redis.opsForList().range(APPROVAL_PENDING_KEY, 0, -1);
+            Map<String, Object> entry = null;
+            String json = null;
+            if (raw != null) {
+                for (String s : raw) {
+                    Map<String, Object> e = JsonUtils.readMap(s);
+                    if (approvalId.equals(e.get("id"))) {
+                        entry = e;
+                        json = s;
+                        break;
+                    }
+                }
+            }
+            if (entry == null) {
+                log.warn("approveAction entry missing tenantId={} approvalId={}", tenantId, approvalId);
+                return Map.of("ok", false, "approval_id", approvalId, "error",
+                        "门控项不存在或已处理（可能已过期或被其他会话处理），请勿重复确认/拒绝");
+            }
+            String entryTenant = String.valueOf(entry.get("tenant_id"));
+            String entryUser = String.valueOf(entry.get("user_id"));
+            String entrySession = String.valueOf(entry.get("session_id"));
+            boolean self = Long.parseLong(entryTenant) == tenantId
+                    && entryUser.equals(String.valueOf(userId))
+                    && entrySession.equals(sessionId);
+            if (!self) {
+                log.warn("approveAction forbidden tenantId={} approvalId={} entryTenant={} entryUser={} entrySession={}",
+                        tenantId, approvalId, entryTenant, entryUser, entrySession);
+                return Map.of("ok", false, "approval_id", approvalId,
+                        "error", "仅动作发起者本人可在原会话中确认该挂起项");
+            }
+            String action = String.valueOf(entry.get("action"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> args = entry.get("args") instanceof Map
+                    ? (Map<String, Object>) entry.get("args") : Map.of();
+            Map<String, Object> result = Map.of();
+            String message = approved ? "已确认并执行：" + action : "已取消：" + action;
+            if (approved) {
+                // 以挂起时的原身份执行原动作（与 applyAction 直接执行路径一致的身份授权）
+                com.eaagent.ontology.action.ActionContext ctx = com.eaagent.ontology.action.ActionContext.of(
+                        Long.parseLong(entryTenant), Long.parseLong(entryUser),
+                        String.valueOf(entry.get("role")), "hitl:" + approvalId);
+                ActionResult r = actionRegistry.get(action).execute(ctx,
+                        com.eaagent.ontology.action.ActionRequest.of(args));
+                result = r.data() == null ? Map.of("ok", r.success()) : r.data();
+                message = (r.success() ? "已确认并执行：" : "执行失败：") + action;
+                if (!r.success() && r.data() != null) {
+                    message += "，结果：" + JsonUtils.write(r.data());
+                }
+            }
+            try {
+                redis.opsForList().remove(APPROVAL_PENDING_KEY, 0, json);
+            } catch (Exception e) {
+                log.error("approveAction remove failed tenantId={} approvalId={}: {}", tenantId, approvalId, e.toString());
+            }
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("approval_id", approvalId);
+            out.put("action", action);
+            out.put("approved", approved);
+            out.put("message", message);
+            if (!result.isEmpty()) {
+                out.put("result", result);
+            }
             return out;
         }
     }
 
     /** applyAction 工具描述：动态枚举动作与必需字段（LLM 无需猜参数名）。 */
     private String describeActions() {
-        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略；建议模式 suggest 下写动作返回 PENDING_APPROVAL=已挂起，向用户说明等待其在聊天中确认后执行）。registered："
+        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略；建议模式 suggest 下写动作返回 PENDING_APPROVAL=已挂起，向用户说明需在聊天中回复「确认执行」或「取消」，其确认后调用 approveAction 放行）。registered："
                 + actionRegistry.all().values().stream()
                         .sorted(java.util.Comparator.comparing(a -> a.meta().name()))
                         .map(a -> a.meta().name() + "（" + a.meta().description()

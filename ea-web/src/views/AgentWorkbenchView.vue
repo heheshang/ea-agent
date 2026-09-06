@@ -12,7 +12,7 @@ type Block =
   | { kind: 'thinking'; text: string }
   | { kind: 'step'; title: string; detail?: unknown }
   | { kind: 'reply'; text: string }
-  | { kind: 'approval'; approvalId: string; action: string; args?: unknown; decided?: 'approved' | 'cancelled'; deciding?: boolean }
+  | { kind: 'approval'; approvalId: string; action: string; args?: unknown }
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -145,7 +145,7 @@ function pushEvent(name: SseEventName, data: unknown) {
       const chain = (d.chain ?? {}) as Record<string, unknown>
       const suffix = chainSuffix(chain, undefined)
       asst.blocks.push({ kind: 'step', title: `工具结果 · ${str(d.tool ?? 'unknown')}${suffix}`, detail: d.result ?? d })
-      // HITL：applyAction 在建议模式返回 PENDING_APPROVAL → 聊天流内渲染门控卡片（确认/取消）
+      // 会话 HITL：applyAction 在建议模式返回 PENDING_APPROVAL → 聊天流内渲染待确认卡片（回复确认/取消由 approveAction 放行）
       const parsed = parseApprovalResult(d.result)
       if (parsed) {
         asst.blocks.push({
@@ -320,23 +320,7 @@ function parseApprovalResult(raw: unknown): Record<string, unknown> | null {
   }
 }
 
-/** 聊天流 HITL 门控：确认/取消挂起动作，结果作为聊天消息追加。 */
-async function decideInChat(b: Block & { kind: 'approval' }, approved: boolean) {
-  if (b.deciding || b.decided) return
-  b.deciding = true
-  try {
-    await post(`/agent/approvals/${b.approvalId}/decision`, { approved })
-    b.decided = approved ? 'approved' : 'cancelled'
-    messages.value.push({
-      role: 'assistant',
-      blocks: [{ kind: 'reply', text: approved ? `已确认并执行：${b.action}` : `已取消：${b.action}` }],
-    })
-  } catch {
-    // 权限不足等：http 拦截器已 toast；卡片保持挂起可重试
-  } finally {
-    b.deciding = false
-  }
-}
+/** 会话 HITL：applyAction 挂起后由用户在聊天内回复确认/拒绝，LLM 调 approveAction 放行（无需前端 API）。 */
 </script>
 
 <template>
@@ -378,17 +362,9 @@ async function decideInChat(b: Block & { kind: 'approval' }, approved: boolean) 
                         <pre v-if="b.detail != null">{{ pretty(b.detail) }}</pre>
                       </div>
                       <div v-else-if="b.kind === 'approval'" class="approval-card">
-                        <div class="approval-title">待确认 · {{ b.action }}</div>
+                        <div class="approval-title">待确认（会话 HITL） · {{ b.action }}</div>
                         <pre v-if="b.args != null" class="approval-args">{{ pretty(b.args) }}</pre>
-                        <div v-if="b.decided" class="approval-done">
-                          <el-tag size="small" :type="b.decided === 'approved' ? 'success' : 'info'">
-                            {{ b.decided === 'approved' ? '已确认并执行' : '已取消' }}
-                          </el-tag>
-                        </div>
-                        <div v-else class="approval-actions">
-                          <el-button size="small" type="primary" :loading="b.deciding" @click="decideInChat(b, true)">确认执行</el-button>
-                          <el-button size="small" type="info" plain :loading="b.deciding" @click="decideInChat(b, false)">取消</el-button>
-                        </div>
+                        <div class="approval-hint">请在聊天中回复「确认执行」或「取消」，由助手放行后执行</div>
                       </div>
                       <p v-else-if="b.kind === 'reply' && m.streaming" class="reply">{{ b.text }}</p>
                       <div v-else-if="b.kind === 'reply'" class="reply markdown-body" v-html="renderMarkdown(b.text)" />
@@ -638,13 +614,10 @@ async function decideInChat(b: Block & { kind: 'approval' }, approved: boolean) 
   border-radius: 8px;
   padding: 8px 10px;
 }
-.approval-actions {
-  display: flex;
-  gap: 8px;
-}
-.approval-done {
-  display: flex;
-  align-items: center;
+.approval-hint {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #b7791f;
 }
 /* Markdown 渲染区：HTML 结构由 marked 生成，取消 pre-wrap 以避免多余空行。 */
 .markdown-body {

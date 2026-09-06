@@ -13,7 +13,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -28,8 +27,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Agent 对话（4.6/7.1）：POST 建 run（返回 run_id），GET SSE 订阅事件流，
- * POST approval 审批决策（简化：审批人角色由 JWT 提供，MFA 全链路后续迭代）。
+ * Agent 对话（4.6/7.1）：POST 建 run（返回 run_id），GET SSE 订阅事件流。
+ * 会话 HITL 的建议模式门控在 AgentToolRegistry（applyAction 挂起 → approveAction 聊天内放行）。
  */
 @RestController
 @RequestMapping("/api/agent")
@@ -98,14 +97,6 @@ public class AgentChatController {
             }
         });
         return emitter;
-    }
-
-    @PostMapping("/runs/{id}/approval")
-    public Result<Map<String, Object>> approval(@PathVariable Long id,
-                                                @RequestBody Map<String, Object> body) {
-        boolean approved = Boolean.TRUE.equals(body.get("approved"));
-        return Result.ok(agentService.approve(id, approved,
-                TenantContext.userId(), TenantContext.role()));
     }
 
     @GetMapping("/runs")
