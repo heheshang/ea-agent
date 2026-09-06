@@ -86,7 +86,7 @@ public class AgentToolRegistry {
         return forTenant(tenantId, userId, role, null);
     }
 
-    /** 会话级工具集：sessionId 参与建议模式门控（suggest 下写动作挂起人工审批，见 ApplyAction.execute）。 */
+    /** 会话级工具集：sessionId 参与建议模式门控（suggest 下写动作挂起待确认，见 ApplyAction.execute）。 */
     public List<AgentTool> forTenant(Long tenantId, Long userId, String role, String sessionId) {
         return List.of(
                 new QueryCustomers(tenantId, userId, role), new QueryAudience(tenantId, userId, role),
@@ -334,11 +334,11 @@ public class AgentToolRegistry {
     }
 
     /** applyAction：动作执行（设计 3.4）。 */
-    /** 建议模式下挂起人工审批的写动作（importEvents 属流水线入口，不挂起）。 */
+    /** 建议模式下挂起待确认的写动作（importEvents 属流水线入口，不挂起）。 */
     private static final java.util.Set<String> WRITE_ACTIONS =
             java.util.Set.of("createTemplate", "createCampaign", "updateCampaign", "createAudience",
                     "updateCustomerState", "pauseCampaign", "sendTouch");
-    /** 待审批列表键（LRANGE 全部 + LREM/rightPush 更新；ApprovalService 消费）。 */
+    /** 门控挂起键（LRANGE 全部 + LREM 移除；ApprovalService 消费）。 */
     static final String APPROVAL_PENDING_KEY = "ea:agent:approval:pending";
 
     class ApplyAction extends BaseTool {
@@ -366,7 +366,7 @@ public class AgentToolRegistry {
                 log.warn("applyAction rejected tenantId={} action={} reason={}", tenantId, action, ruleErr);
                 return Map.of("ok", false, "error", ruleErr);
             }
-            // 建议模式门控：会话模式为 suggest 且属写动作 → 不入库执行，挂起人工审批
+            // 建议模式门控：会话模式为 suggest 且属写动作 → 不入库执行，挂起待确认
             if (sessionId != null && WRITE_ACTIONS.contains(action) && isSuggestMode()) {
                 return gatePending(action, norm);
             }
@@ -389,7 +389,7 @@ public class AgentToolRegistry {
             }
         }
 
-        /** 挂起待批：待批列表 rightPush JSON entry，返回 PENDING_APPROVAL（LLM 向用户说明等待审批，run 正常 COMPLETED）。 */
+        /** 挂起门控：写动作 rightPush JSON entry，返回 PENDING_APPROVAL（LLM 向用户说明等待确认，run 正常 COMPLETED）。 */
         private Map<String, Object> gatePending(String action, Map<String, Object> norm) {
             String approvalId = UUID.randomUUID().toString();
             Map<String, Object> entry = new java.util.LinkedHashMap<>();
@@ -400,25 +400,29 @@ public class AgentToolRegistry {
             entry.put("session_id", sessionId);
             entry.put("action", action);
             entry.put("args", norm);
-            entry.put("status", "PENDING");
             entry.put("created_at", java.time.Instant.now().toString());
             try {
                 redis.opsForList().rightPush(APPROVAL_PENDING_KEY, JsonUtils.write(entry));
             } catch (Exception e) {
                 log.error("approval pending push failed tenantId={} action={}: {}", tenantId, action, e.toString());
-                return Map.of("ok", false, "error", "审批挂起写入失败: " + e.getMessage());
+                return Map.of("ok", false, "error", "门控挂起写入失败: " + e.getMessage());
             }
             log.info("applyAction gated tenantId={} session={} action={} approvalId={}",
                     tenantId, sessionId, action, approvalId);
-            return Map.of("ok", false, "status", "PENDING_APPROVAL", "approval_id", approvalId,
-                    "action", action,
-                    "message", "建议模式：动作已提交人工审批（等待批准后执行）");
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("ok", false);
+            out.put("status", "PENDING_APPROVAL");
+            out.put("approval_id", approvalId);
+            out.put("action", action);
+            out.put("args", norm);
+            out.put("message", "建议模式：写动作已挂起，请在聊天中确认后执行");
+            return out;
         }
     }
 
     /** applyAction 工具描述：动态枚举动作与必需字段（LLM 无需猜参数名）。 */
     private String describeActions() {
-        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略；建议模式 suggest 下写动作返回 PENDING_APPROVAL=已提交人工审批，向用户说明等待审批即可）。registered："
+        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略；建议模式 suggest 下写动作返回 PENDING_APPROVAL=已挂起，向用户说明等待其在聊天中确认后执行）。registered："
                 + actionRegistry.all().values().stream()
                         .sorted(java.util.Comparator.comparing(a -> a.meta().name()))
                         .map(a -> a.meta().name() + "（" + a.meta().description()

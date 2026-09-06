@@ -92,9 +92,16 @@ public abstract class AbstractAction implements Action {
             log.warn("action failed name={} tenantId={} requestId={} code={} error={}",
                     meta().name(), ctx.tenantId(), requestId, e.getErrorCode().getCode(),
                     truncate(String.valueOf(e.getMessage()), 200));
+            // 失败不计幂等完成：释放抢占锁，允许重试（否则锁残留 TTL 期内重放读占位值报错）
+            if (requestId != null && !requestId.isBlank()) {
+                idempotencyService.release(ctx.tenantId(), requestId);
+            }
             throw e;
         } catch (Exception e) {
             log.error("action {} failed", meta().name(), e);
+            if (requestId != null && !requestId.isBlank()) {
+                idempotencyService.release(ctx.tenantId(), requestId);
+            }
             throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED, String.valueOf(e.getMessage()));
         }
     }

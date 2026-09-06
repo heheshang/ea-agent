@@ -26,7 +26,9 @@ http.interceptors.response.use(
     const body = resp.data as Result
     if (body && typeof body.code === 'number' && body.code !== 0) {
       ElMessage.error(`${body.code}: ${body.message}`)
-      if (body.code === 10002 || body.code === 10003 || body.code === 11003) {
+      // 仅「未认证」类业务码清 token 回登录页：10002（UNAUTHENTICATED）/11003 需重登；
+      // 10003（FORBIDDEN）是业务级无权限（如门控非发起者），只提示，绝不登出。
+      if (body.code === 10002 || body.code === 11003) {
         localStorage.removeItem('ea:token')
         if (!location.pathname.startsWith('/login')) {
           location.href = '/login'

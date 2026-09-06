@@ -12,6 +12,7 @@ type Block =
   | { kind: 'thinking'; text: string }
   | { kind: 'step'; title: string; detail?: unknown }
   | { kind: 'reply'; text: string }
+  | { kind: 'approval'; approvalId: string; action: string; args?: unknown; decided?: 'approved' | 'cancelled'; deciding?: boolean }
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -31,14 +32,6 @@ const messages = ref<ChatMessage[]>([])
 const thinkingOpen = ref<string[]>(['t'])
 const chatBox = ref<HTMLDivElement | null>(null)
 let es: EventSource | null = null
-
-/** 审批面板：建议模式挂起的写动作（GET /api/agent/approvals，决策 POST）。 */
-const approvals = ref<Row[]>([])
-const approvalVisible = ref(false)
-const approvalLoading = ref(false)
-let approvalTimer: number | null = null
-
-type Row = Record<string, unknown>
 
 /** 运行中无任何助手输出时的占位（首块到达前）。 */
 const awaitingFirst = computed(() => running.value && messages.value.length > 0 && messages.value[messages.value.length - 1].role === 'user')
@@ -152,6 +145,16 @@ function pushEvent(name: SseEventName, data: unknown) {
       const chain = (d.chain ?? {}) as Record<string, unknown>
       const suffix = chainSuffix(chain, undefined)
       asst.blocks.push({ kind: 'step', title: `工具结果 · ${str(d.tool ?? 'unknown')}${suffix}`, detail: d.result ?? d })
+      // HITL：applyAction 在建议模式返回 PENDING_APPROVAL → 聊天流内渲染门控卡片（确认/取消）
+      const parsed = parseApprovalResult(d.result)
+      if (parsed) {
+        asst.blocks.push({
+          kind: 'approval',
+          approvalId: str(parsed.approval_id),
+          action: str(parsed.action ?? d.tool ?? 'applyAction'),
+          args: parsed.args,
+        })
+      }
       break
     }
     case 'plan':
@@ -277,7 +280,6 @@ onActivated(() => {
 })
 onBeforeUnmount(() => {
   es?.close()
-  if (approvalTimer != null) clearInterval(approvalTimer)
 })
 
 watch(messages, () => {
@@ -292,45 +294,48 @@ function pretty(data: unknown): string {
   return JSON.stringify(data, null, 2)
 }
 
-/** 待批列表加载 + 打开时 10s 轮询。 */
-async function loadApprovals() {
-  approvalLoading.value = true
+/** 解析 action_result：applyAction 建议模式挂起 → {approval_id, action, args}；非挂起返回 null。 */
+function parseApprovalResult(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null
+  if (typeof raw === 'object') {
+    const o = raw as Record<string, unknown>
+    return o.status === 'PENDING_APPROVAL' && o.approval_id ? o : null
+  }
+  const s = String(raw)
+  if (!s.includes('PENDING_APPROVAL')) return null
   try {
-    approvals.value = (await get<Row[]>('/agent/approvals', { status: 'pending' })) ?? []
+    const o = JSON.parse(s) as Record<string, unknown>
+    return o.status === 'PENDING_APPROVAL' && o.approval_id ? o : null
   } catch {
-    approvals.value = []
+    // Java Map toString 兜底：{ok=false, status=PENDING_APPROVAL, approval_id=xxx, action=yyy, args={…}}
+    const grab = (k: string): string => {
+      const i = s.indexOf(k + '=')
+      if (i < 0) return ''
+      const rest = s.slice(i + k.length + 1)
+      return rest.split(',').filter(Boolean).shift()?.trim() ?? ''
+    }
+    const id = grab('approval_id')
+    const action = grab('action')
+    return id ? { status: 'PENDING_APPROVAL', approval_id: id, action: action || undefined } : null
+  }
+}
+
+/** 聊天流 HITL 门控：确认/取消挂起动作，结果作为聊天消息追加。 */
+async function decideInChat(b: Block & { kind: 'approval' }, approved: boolean) {
+  if (b.deciding || b.decided) return
+  b.deciding = true
+  try {
+    await post(`/agent/approvals/${b.approvalId}/decision`, { approved })
+    b.decided = approved ? 'approved' : 'cancelled'
+    messages.value.push({
+      role: 'assistant',
+      blocks: [{ kind: 'reply', text: approved ? `已确认并执行：${b.action}` : `已取消：${b.action}` }],
+    })
+  } catch {
+    // 权限不足等：http 拦截器已 toast；卡片保持挂起可重试
   } finally {
-    approvalLoading.value = false
+    b.deciding = false
   }
-}
-
-function openApprovals() {
-  approvalVisible.value = true
-  loadApprovals()
-  approvalTimer = window.setInterval(loadApprovals, 10000)
-}
-
-function closeApprovals() {
-  approvalVisible.value = false
-  if (approvalTimer != null) {
-    clearInterval(approvalTimer)
-    approvalTimer = null
-  }
-}
-
-async function decideApproval(id: string, approved: boolean) {
-  await post(`/agent/approvals/${id}/decision`, { approved })
-  ElMessage.success(approved ? '已批准并执行' : '已拒绝')
-  loadApprovals()
-}
-
-function approvalActionLabel(a: Row): string {
-  return String(a.action ?? '-')
-}
-
-function approvalArgs(a: Row): string {
-  const args = a.args
-  return args == null ? '-' : JSON.stringify(args, null, 2)
 }
 </script>
 
@@ -343,11 +348,8 @@ function approvalArgs(a: Row): string {
     <div class="wb-toolbar">
       <el-radio-group v-model="mode" size="small">
         <el-radio-button value="auto">auto（直接执行）</el-radio-button>
-        <el-radio-button value="suggest">suggest（写动作待审批）</el-radio-button>
+        <el-radio-button value="suggest">suggest（写动作待确认）</el-radio-button>
       </el-radio-group>
-      <el-badge :value="approvals.length" :hidden="approvals.length === 0" :offset="[2, 2]">
-        <el-button size="small" @click="openApprovals">待批审批</el-button>
-      </el-badge>
     </div>
 
     <el-row :gutter="16" class="wb-row">
@@ -363,21 +365,34 @@ function approvalArgs(a: Row): string {
               <div v-else class="row-inner">
                 <span class="a-avatar">AI</span>
                 <div class="bubble assistant">
-                  <template v-for="(b, bi) in m.blocks" :key="bi">
-                    <el-collapse v-if="b.kind === 'thinking' && b.text" v-model="thinkingOpen" class="thinking">
-                      <el-collapse-item :title="`思考过程 · ${b.text.length} 字`" name="t">
-                        <p class="thinking-text">{{ b.text }}</p>
-                      </el-collapse-item>
-                    </el-collapse>
-                    <div v-else-if="b.kind === 'step'" class="step">
-                      <div class="step-title">
-                        <el-tag size="small" effect="plain">{{ b.title }}</el-tag>
+<template v-for="(b, bi) in m.blocks" :key="bi">
+                      <el-collapse v-if="b.kind === 'thinking' && b.text" v-model="thinkingOpen" class="thinking">
+                        <el-collapse-item :title="`思考过程 · ${b.text.length} 字`" name="t">
+                          <p class="thinking-text">{{ b.text }}</p>
+                        </el-collapse-item>
+                      </el-collapse>
+                      <div v-else-if="b.kind === 'step'" class="step">
+                        <div class="step-title">
+                          <el-tag size="small" effect="plain">{{ b.title }}</el-tag>
+                        </div>
+                        <pre v-if="b.detail != null">{{ pretty(b.detail) }}</pre>
                       </div>
-                      <pre v-if="b.detail != null">{{ pretty(b.detail) }}</pre>
-                    </div>
-                    <p v-else-if="b.kind === 'reply' && m.streaming" class="reply">{{ b.text }}</p>
-                    <div v-else-if="b.kind === 'reply'" class="reply markdown-body" v-html="renderMarkdown(b.text)" />
-                  </template>
+                      <div v-else-if="b.kind === 'approval'" class="approval-card">
+                        <div class="approval-title">待确认 · {{ b.action }}</div>
+                        <pre v-if="b.args != null" class="approval-args">{{ pretty(b.args) }}</pre>
+                        <div v-if="b.decided" class="approval-done">
+                          <el-tag size="small" :type="b.decided === 'approved' ? 'success' : 'info'">
+                            {{ b.decided === 'approved' ? '已确认并执行' : '已取消' }}
+                          </el-tag>
+                        </div>
+                        <div v-else class="approval-actions">
+                          <el-button size="small" type="primary" :loading="b.deciding" @click="decideInChat(b, true)">确认执行</el-button>
+                          <el-button size="small" type="info" plain :loading="b.deciding" @click="decideInChat(b, false)">取消</el-button>
+                        </div>
+                      </div>
+                      <p v-else-if="b.kind === 'reply' && m.streaming" class="reply">{{ b.text }}</p>
+                      <div v-else-if="b.kind === 'reply'" class="reply markdown-body" v-html="renderMarkdown(b.text)" />
+                    </template>
                 </div>
               </div>
             </div>
@@ -427,34 +442,6 @@ function approvalArgs(a: Row): string {
         </el-card>
       </el-col>
     </el-row>
-
-    <el-dialog v-model="approvalVisible" title="建议模式 · 待批审批" width="880px" destroy-on-close @closed="closeApprovals">
-      <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
-        建议模式下写动作挂起于此（suggest 会话）；批准后按原请求身份执行，拒绝则仅记录。需 REVIEWER 及以上角色决策。
-      </div>
-      <el-table v-loading="approvalLoading" :data="approvals" size="small" stripe>
-        <el-table-column prop="created_at" label="提交时间" width="170">
-          <template #default="{ row }">{{ row.created_at ?? '-' }}</template>
-        </el-table-column>
-        <el-table-column label="动作" width="150">
-          <template #default="{ row }">{{ approvalActionLabel(row) }}</template>
-        </el-table-column>
-        <el-table-column label="参数" min-width="260">
-          <template #default="{ row }">
-            <pre class="approval-args">{{ approvalArgs(row) }}</pre>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="150" align="right">
-          <template #default="{ row }">
-            <el-button size="small" type="primary" @click="decideApproval(String(row.id), true)">批准执行</el-button>
-            <el-button size="small" type="danger" @click="decideApproval(String(row.id), false)">拒绝</el-button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无待批项" :image-size="60" />
-        </template>
-      </el-table>
-    </el-dialog>
   </div>
 </template>
 
@@ -624,6 +611,40 @@ function approvalArgs(a: Row): string {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 聊天流 HITL 门控卡片：建议模式挂起动作，聊天内确认/取消。 */
+.approval-card {
+  margin: 10px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid #ffe1a8;
+  border-radius: 12px;
+  background: #fffbf2;
+}
+.approval-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #b25e00;
+  margin-bottom: 8px;
+}
+.approval-args {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #606266;
+  background: #fff;
+  border: 1px solid #f0e6d2;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+.approval-done {
+  display: flex;
+  align-items: center;
 }
 /* Markdown 渲染区：HTML 结构由 marked 生成，取消 pre-wrap 以避免多余空行。 */
 .markdown-body {
