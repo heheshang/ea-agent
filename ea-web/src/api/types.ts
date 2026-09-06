@@ -34,7 +34,9 @@ export interface AgentRun {
   updatedAt?: string
 }
 
-/** 知识库条目（租户维度，对话检索注入上下文）。 */
+/** 知识库条目（租户维度，对话检索注入上下文）。
+ *  V14 本体化：recordType 记录类别、lifecycle 生命周期(active 现行/superseded 被取代/obsolete 废弃)、
+ *  supersedesId 取代边（本条取代哪条旧条目）。 */
 export interface KnowledgeEntry {
   id: number
   tenantId: number
@@ -42,6 +44,9 @@ export interface KnowledgeEntry {
   content: string
   tags?: string[]
   enabled: boolean
+  recordType?: string
+  lifecycle?: string
+  supersedesId?: number | null
   createdAt?: string
   updatedAt?: string
 }
@@ -52,6 +57,8 @@ export interface KnowledgeHit {
   title: string
   tags: string[]
   score: number
+  recordType?: string
+  lifecycle?: string
 }
 
 /** 消息模板（租户维度，审核流 DRAFT→PENDING→APPROVED|REJECTED，REVIEWER 审批）。 */

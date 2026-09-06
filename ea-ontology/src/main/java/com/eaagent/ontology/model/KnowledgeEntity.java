@@ -23,6 +23,23 @@ public class KnowledgeEntity {
     public static final String COL_ENABLED = "enabled";
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
+    public static final String COL_RECORD_TYPE = "record_type";
+    public static final String COL_LIFECYCLE = "lifecycle";
+    public static final String COL_SUPERSEDES_ID = "supersedes_id";
+
+    /** 记录类别(V14 本体化;缺省 rule 兼容存量)。 */
+    public static final String TYPE_DECISION = "decision";        // 架构/业务决策
+    public static final String TYPE_CONSTRAINT = "constraint";    // 硬性约束(触达前必须核对)
+    public static final String TYPE_RULE = "rule";                // 业务规则(默认)
+    public static final String TYPE_LESSON = "lesson";            // 经验教训
+    public static final String TYPE_RATIONALE = "rationale";      // 决策理由
+    public static final String TYPE_FACT = "fact";                // 事实
+    public static final String TYPE_ANTI_PATTERN = "anti_pattern"; // 反模式
+
+    /** 生命周期(V14;active 现行 / superseded 被取代 / obsolete 废弃)。 */
+    public static final String LIFE_ACTIVE = "active";
+    public static final String LIFE_SUPERSEDED = "superseded";
+    public static final String LIFE_OBSOLETE = "obsolete";
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -32,6 +49,9 @@ public class KnowledgeEntity {
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> tags;        // jsonb 字符串数组
     private Boolean enabled;          // 停用后不参与检索
+    private String recordType;        // decision/constraint/rule/lesson/rationale/fact/anti_pattern
+    private String lifecycle;         // active/superseded/obsolete
+    private Long supersedesId;        // 取代边:本条取代哪条(新→旧)
     private Instant createdAt;
     private Instant updatedAt;
 }

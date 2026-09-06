@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -24,6 +25,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 知识库服务（ea-agent）：租户级知识条目的管理 + 对话检索注入。
@@ -51,6 +53,26 @@ public class KnowledgeBaseService {
     /** 注入条数上限默认值（可经 ea.knowledge.top-k 覆盖）。 */
     static final int DEFAULT_TOP_K = 3;
 
+    /** 合法记录类别（V14 本体化；与 KnowledgeEntity.TYPE_* 对应）。 */
+    private static final Set<String> RECORD_TYPES = Set.of(
+            KnowledgeEntity.TYPE_DECISION, KnowledgeEntity.TYPE_CONSTRAINT, KnowledgeEntity.TYPE_RULE,
+            KnowledgeEntity.TYPE_LESSON, KnowledgeEntity.TYPE_RATIONALE, KnowledgeEntity.TYPE_FACT,
+            KnowledgeEntity.TYPE_ANTI_PATTERN);
+
+    /** 合法生命周期（V14；与 KnowledgeEntity.LIFE_* 对应）。 */
+    private static final Set<String> LIFECYCLES = Set.of(
+            KnowledgeEntity.LIFE_ACTIVE, KnowledgeEntity.LIFE_SUPERSEDED, KnowledgeEntity.LIFE_OBSOLETE);
+
+    /** 记录类别中文标签（注入上下文时标注，让模型识别约束/规则/事实的语义权重）。 */
+    private static final Map<String, String> TYPE_LABELS = Map.ofEntries(
+            Map.entry(KnowledgeEntity.TYPE_DECISION, "决策"),
+            Map.entry(KnowledgeEntity.TYPE_CONSTRAINT, "约束"),
+            Map.entry(KnowledgeEntity.TYPE_RULE, "规则"),
+            Map.entry(KnowledgeEntity.TYPE_LESSON, "经验"),
+            Map.entry(KnowledgeEntity.TYPE_RATIONALE, "理由"),
+            Map.entry(KnowledgeEntity.TYPE_FACT, "事实"),
+            Map.entry(KnowledgeEntity.TYPE_ANTI_PATTERN, "反模式"));
+
     private final KnowledgeMapper knowledgeMapper;
     private final int topK;
 
@@ -62,8 +84,10 @@ public class KnowledgeBaseService {
 
     // ---------- 管理 ----------
 
-    /** 分页列表：keyword 命中标题/内容/标签（tags::text 模糊），按更新时间倒序。 */
-    public PageResult<KnowledgeEntity> list(Long tenantId, String keyword, int page, int size) {
+    /** 分页列表：keyword 命中标题/内容/标签（tags::text 模糊），按更新时间倒序；
+     *  可空 recordType/lifecycle 过滤（管理端按本体维度浏览）。 */
+    public PageResult<KnowledgeEntity> list(Long tenantId, String keyword,
+                                            String recordType, String lifecycle, int page, int size) {
         int p = Math.max(page, 1);
         int s = Math.min(Math.max(size, 1), 100);
         QueryWrapper<KnowledgeEntity> qw = new QueryWrapper<KnowledgeEntity>()
@@ -74,48 +98,149 @@ public class KnowledgeBaseService {
                     .or().like(KnowledgeEntity.COL_CONTENT, k)
                     .or().like("tags::text", k));
         }
+        if (recordType != null && !recordType.isBlank()) {
+            qw.eq(KnowledgeEntity.COL_RECORD_TYPE, normalizeType(recordType));
+        }
+        if (lifecycle != null && !lifecycle.isBlank()) {
+            qw.eq(KnowledgeEntity.COL_LIFECYCLE, normalizeLifecycle(lifecycle));
+        }
         long total = knowledgeMapper.selectCount(qw);
         qw.orderByDesc(KnowledgeEntity.COL_UPDATED_AT)
                 .last("LIMIT " + s + " OFFSET " + (long) (p - 1) * s);
         return new PageResult<>(knowledgeMapper.selectList(qw), null, total);
     }
 
-    /** 单条（租户内校验）；不存在抛 E-12007。 */
+/** 单条（租户内校验）；不存在抛 E-12007。 */
     public KnowledgeEntity get(Long tenantId, Long id) {
         KnowledgeEntity e = knowledgeMapper.selectOne(new QueryWrapper<KnowledgeEntity>()
                 .eq(KnowledgeEntity.COL_ID, id)
                 .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
                 .last("LIMIT 1"));
         if (e == null) {
-            throw new BizException(ErrorCode.KNOWLEDGE_NOT_FOUND);
+            throw new BizException(ErrorCode.KNOWLEDGE_NOT_FOUND, "知识条目不存在: " + id);
         }
         return e;
     }
 
+    /**
+     * 取代链遍历（符号层查询）：从旧到新返回该条目所在的整条取代链（含路径上的 superseded/obsolete 中间态）。
+     * 含自身；链顺序为最旧 → 最新（现行版本在末位）。用于管理端查看"这条规则的历史版本演进"。
+     */
+    public List<KnowledgeEntity> trace(Long tenantId, Long id) {
+        get(tenantId, id); // 存在性 + 租户校验
+        // 1. 沿 supersedes_id 反向回溯到最旧（被本条/中间版本取代的祖先链）
+        List<Long> ancestry = new ArrayList<>(); // 自身 → 最旧祖先
+        Long cursor = id;
+        int guard = 0;
+        while (cursor != null && guard++ < 50) {
+            KnowledgeEntity cur = knowledgeMapper.selectOne(new QueryWrapper<KnowledgeEntity>()
+                    .eq(KnowledgeEntity.COL_ID, cursor)
+                    .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                    .last("LIMIT 1"));
+            if (cur == null) {
+                break;
+            }
+            ancestry.add(cur.getId());
+            if (cur.getSupersedesId() == null) {
+                break;
+            }
+            cursor = cur.getSupersedesId();
+        }
+        // 最旧 → 自身
+        List<Long> chainIds = new ArrayList<>(ancestry.size() + 8);
+        for (int i = ancestry.size() - 1; i >= 0; i--) {
+            chainIds.add(ancestry.get(i));
+        }
+        // 2. 正向追最新（谁取代链尾 → 沿 supersedes_id 指向它），自身 → 最新
+        Long tail = id;
+        int guard2 = 0;
+        while (guard2++ < 50) {
+            KnowledgeEntity successor = knowledgeMapper.selectOne(new QueryWrapper<KnowledgeEntity>()
+                    .eq(KnowledgeEntity.COL_SUPERSEDES_ID, tail)
+                    .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                    .orderByDesc(KnowledgeEntity.COL_UPDATED_AT)
+                    .last("LIMIT 1"));
+            if (successor == null || chainIds.contains(successor.getId()) || chainIds.size() > 50) {
+                break;
+            }
+            chainIds.add(successor.getId());
+            tail = successor.getId();
+        }
+        List<KnowledgeEntity> chain = new ArrayList<>(chainIds.size());
+        for (Long cid : chainIds) {
+            chain.add(get(tenantId, cid));
+        }
+        return chain;
+    }
+
+    /** 规范化记录类别（null/blank → rule；非法值 E-PARAM）。 */
+    private static String normalizeType(String v) {
+        if (v == null || v.isBlank()) {
+            return KnowledgeEntity.TYPE_RULE;
+        }
+        String t = v.trim().toLowerCase(Locale.ROOT);
+        if (!RECORD_TYPES.contains(t)) {
+            throw new BizException(ErrorCode.PARAM_ERROR,
+                    "未知记录类别: " + v + "（可选: decision/constraint/rule/lesson/rationale/fact/anti_pattern）");
+        }
+        return t;
+    }
+
+    /** 规范化生命周期（null/blank → active；非法值 E-PARAM）。 */
+    private static String normalizeLifecycle(String v) {
+        if (v == null || v.isBlank()) {
+            return KnowledgeEntity.LIFE_ACTIVE;
+        }
+        String t = v.trim().toLowerCase(Locale.ROOT);
+        if (!LIFECYCLES.contains(t)) {
+            throw new BizException(ErrorCode.PARAM_ERROR,
+                    "未知生命周期: " + v + "（可选: active/superseded/obsolete）");
+        }
+        return t;
+    }
+
+    /** 记录类别中文标签（引擎注入上下文时前置标注；未知类型回退"规则"）。 */
+    public static String typeLabel(String recordType) {
+        return TYPE_LABELS.getOrDefault(recordType, "规则");
+    }
+
+    @Transactional
     public KnowledgeEntity create(Long tenantId, KnowledgeWriteRequest req) {
         String title = req.getTitle() == null ? null : req.getTitle().trim();
         String content = req.getContent();
         if (title == null || title.isBlank() || content == null || content.isBlank()) {
             throw new BizException(ErrorCode.PARAM_ERROR, "标题与内容不能为空");
         }
+        String recordType = normalizeType(req.getRecordType());
+        String lifecycle = normalizeLifecycle(req.getLifecycle());
         KnowledgeEntity e = new KnowledgeEntity();
         e.setTenantId(tenantId);
         e.setTitle(title);
         e.setContent(content);
         e.setTags(req.getTags() == null ? List.of() : req.getTags());
         e.setEnabled(req.getEnabled() == null || req.getEnabled());
+        e.setRecordType(recordType);
+        e.setLifecycle(lifecycle);
         Instant now = Instant.now();
         e.setCreatedAt(now);
         e.setUpdatedAt(now);
+        // 取代边：值校验 + 目标自动置 superseded（符号层一致性）
+        if (req.getSupersedesId() != null) {
+            e.setSupersedesId(resolveSupersede(tenantId, req.getSupersedesId(), null));
+        }
         knowledgeMapper.insert(e);
         refreshEmbedding(e);
-        log.info("knowledge created id={} tenantId={} title={}", e.getId(), tenantId, truncate(title, 60));
+        log.info("knowledge created id={} tenantId={} title={} recordType={} lifecycle={}",
+                e.getId(), tenantId, truncate(title, 60), recordType, lifecycle);
         return e;
     }
 
-    /** 更新：传入覆盖、缺失保留；合并后标题/内容须非空（靶向更新，避免旧快照覆写统计列）。 */
+    /** 更新：传入覆盖、缺失保留；合并后标题/内容须非空（靶向更新，避免旧快照覆写统计列）。
+     *  V14 本体化：recordType/lifecycle/supersedesId 传入非 null 才覆盖；设置取代边时目标自动置 superseded，
+     *  若被替换掉的原取代目标已无人取代则恢复 active（符号层一致性，见 resolveSupersede）。 */
+    @Transactional
     public KnowledgeEntity update(Long tenantId, Long id, KnowledgeWriteRequest req) {
-        get(tenantId, id); // 存在性 + 租户校验
+        KnowledgeEntity old = get(tenantId, id); // 存在性 + 租户校验
         String title = req.getTitle() == null ? null : req.getTitle().trim();
         String content = req.getContent();
         if (title != null && title.isBlank() || content != null && content.isBlank()) {
@@ -137,15 +262,71 @@ public class KnowledgeBaseService {
         if (req.getEnabled() != null) {
             uw.set(KnowledgeEntity.COL_ENABLED, req.getEnabled());
         }
+        if (req.getRecordType() != null) {
+            uw.set(KnowledgeEntity.COL_RECORD_TYPE, normalizeType(req.getRecordType()));
+        }
+        if (req.getLifecycle() != null) {
+            uw.set(KnowledgeEntity.COL_LIFECYCLE, normalizeLifecycle(req.getLifecycle()));
+        }
+        if (req.getSupersedesId() != null) {
+            Long newTarget = resolveSupersede(tenantId, req.getSupersedesId(), id);
+            uw.set(KnowledgeEntity.COL_SUPERSEDES_ID, newTarget);
+            // 原取代目标被换掉：若已无人取代则恢复 active（否则它被别的现行条目标记 superseded，保持）
+            if (old.getSupersedesId() != null && !old.getSupersedesId().equals(newTarget)) {
+                restoreIfUnsuperseded(tenantId, old.getSupersedesId(), id);
+            }
+        }
         uw.set(KnowledgeEntity.COL_UPDATED_AT, Instant.now());
         knowledgeMapper.update(null, uw);
         KnowledgeEntity updated = get(tenantId, id);
         refreshEmbedding(updated);
-        log.info("knowledge updated id={} tenantId={}", id, tenantId);
+        log.info("knowledge updated id={} tenantId={} recordType={} lifecycle={} supersedesId={}",
+                id, tenantId, updated.getRecordType(), updated.getLifecycle(), updated.getSupersedesId());
         return updated;
     }
 
-    /** 物理删除（表无 deleted 列；先查存在性否则 E-12007）。 */
+    /** 取代边校验 + 一致性：目标须存在、同租户、非自身、生命周期为 active（不能取代已 superseded/obsolete 的），
+     *  校验通过后目标自动置 superseded（同事务）。返回规范化后的取代目标 id。 */
+    private Long resolveSupersede(Long tenantId, Long targetId, Long selfId) {
+        if (targetId == null) {
+            return null;
+        }
+        if (selfId != null && selfId.equals(targetId)) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "不能取代自身");
+        }
+        KnowledgeEntity target = get(tenantId, targetId); // 租户内存在性
+        if (KnowledgeEntity.LIFE_SUPERSEDED.equals(target.getLifecycle())
+                || KnowledgeEntity.LIFE_OBSOLETE.equals(target.getLifecycle())) {
+            throw new BizException(ErrorCode.PARAM_ERROR,
+                    "目标条目生命周期为 " + target.getLifecycle() + "，不能作为取代对象");
+        }
+        // 目标自动标记已被取代（取代链边 + 生命周期联动）
+        knowledgeMapper.update(null, new UpdateWrapper<KnowledgeEntity>()
+                .eq(KnowledgeEntity.COL_ID, targetId)
+                .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                .set(KnowledgeEntity.COL_LIFECYCLE, KnowledgeEntity.LIFE_SUPERSEDED)
+                .set(KnowledgeEntity.COL_UPDATED_AT, Instant.now()));
+        return targetId;
+    }
+
+    /** 若 candidate 已无任何 active 条目取代它，则恢复 active（取消取代/替换目标后的一致性恢复）。 */
+    private void restoreIfUnsuperseded(Long tenantId, Long candidateId, Long exceptId) {
+        Long still = knowledgeMapper.selectCount(new QueryWrapper<KnowledgeEntity>()
+                .eq(KnowledgeEntity.COL_SUPERSEDES_ID, candidateId)
+                .eq(KnowledgeEntity.COL_LIFECYCLE, KnowledgeEntity.LIFE_ACTIVE)
+                .ne(KnowledgeEntity.COL_ID, exceptId)
+                .eq(KnowledgeEntity.COL_TENANT_ID, tenantId));
+        if (still == null || still == 0) {
+            knowledgeMapper.update(null, new UpdateWrapper<KnowledgeEntity>()
+                    .eq(KnowledgeEntity.COL_ID, candidateId)
+                    .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                    .set(KnowledgeEntity.COL_LIFECYCLE, KnowledgeEntity.LIFE_ACTIVE)
+                    .set(KnowledgeEntity.COL_UPDATED_AT, Instant.now()));
+        }
+    }
+
+    /** 物理删除（表无 deleted 列；先查存在性否则 E-12007）。
+     *  V14 边一致性：他人指向本条的取代引用由 FK ON DELETE SET NULL 自动清空（不悬空指向已删行）。 */
     public void delete(Long tenantId, Long id) {
         get(tenantId, id);
         knowledgeMapper.delete(new QueryWrapper<KnowledgeEntity>()
@@ -156,13 +337,18 @@ public class KnowledgeBaseService {
 
     // ---------- 检索 ----------
 
-    /** Agent 对话注入用：取配置 topK 条命中条目（按相关度）。 */
+    /** Agent 对话注入用：取配置 topK 条命中条目（按相关度；V14 起仅现行 active 条目注入——被取代/废弃条目按构造排除）。 */
     public List<KnowledgeEntity> search(Long tenantId, String query) {
         return searchScored(tenantId, query, this.topK).stream().map(KnowledgeHit::entry).toList();
     }
 
-    /** 检索（可调 topK 并暴露得分，供知识库管理页"试检索"预览）：pgvector 余弦 topK + 双闸过滤。 */
+    /** 检索（可调 topK 并暴露得分，供知识库管理页"试检索"预览）：pgvector 余弦 topK + 双闸过滤。
+     *  默认仅现行条目（lifecycle=active）参与——语义同注入；管理端传 includeInactive=true 可看全部（含被取代，便于核对冲突）。 */
     public List<KnowledgeHit> searchScored(Long tenantId, String query, int topK) {
+        return searchScored(tenantId, query, topK, false);
+    }
+
+    public List<KnowledgeHit> searchScored(Long tenantId, String query, int topK, boolean includeInactive) {
         int k = Math.max(topK, 0);
         if (tenantId == null || query == null || query.isBlank() || k == 0) {
             return List.of();
@@ -172,8 +358,9 @@ public class KnowledgeBaseService {
             return List.of();
         }
         String queryVec = toVectorLiteral(embedQuery(query));
-        List<Map<String, Object>> rows =
-                knowledgeMapper.searchSimilar(tenantId, queryVec, Math.min(k * CANDIDATE_FACTOR, 100));
+        List<Map<String, Object>> rows = knowledgeMapper.searchSimilar(
+                tenantId, queryVec, Math.min(k * CANDIDATE_FACTOR, 100),
+                includeInactive ? null : KnowledgeEntity.LIFE_ACTIVE);
         List<KnowledgeHit> hits = new ArrayList<>();
         for (Map<String, Object> row : rows) {
             double cosine = 1.0 - ((Number) row.get("distance")).doubleValue();
@@ -297,6 +484,12 @@ public class KnowledgeBaseService {
         e.setContent((String) row.get("content"));
         e.setTags(parseTags((String) row.get("tags")));
         e.setEnabled((Boolean) row.get("enabled"));
+        e.setRecordType(row.get("record_type") == null ? KnowledgeEntity.TYPE_RULE
+                : (String) row.get("record_type")); // 存量行/旧测试行兜底默认 rule
+        e.setLifecycle(row.get("lifecycle") == null ? KnowledgeEntity.LIFE_ACTIVE
+                : (String) row.get("lifecycle"));   // 存量行默认 active=现行，行为零回归
+        e.setSupersedesId(row.get("supersedes_id") == null ? null
+                : ((Number) row.get("supersedes_id")).longValue());
         e.setCreatedAt(toInstant(row.get("created_at")));
         e.setUpdatedAt(toInstant(row.get("updated_at")));
         return e;

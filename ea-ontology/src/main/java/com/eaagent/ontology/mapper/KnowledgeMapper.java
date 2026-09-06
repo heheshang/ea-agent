@@ -17,20 +17,29 @@ public interface KnowledgeMapper extends BaseMapper<KnowledgeEntity> {
      * pgvector 余弦检索：租户启用且已嵌入的条目按相似度升序取 {@code limit} 条（排名由 SQL 完成）。
      * 返回行含 distance（余弦距离，越小越近；tags::text 转字符串防 PGobject）；
      * Service 侧再按相似度阈值过滤弱命中并截断到 topK。
+     * {@code lifecycle} 非 null 时按生命周期过滤（对话注入传 active——被取代/废弃条目按构造排除）；
+     * null 查全部（管理端试检索可看全部状态）。
      */
     @Select("""
-            SELECT id, tenant_id, title, content, tags::text AS tags, enabled, created_at, updated_at,
-                   (embedding <=> #{queryVec}::vector) AS distance
+            <script>
+            SELECT id, tenant_id, title, content, tags::text AS tags, enabled,
+                   record_type, lifecycle, supersedes_id, created_at, updated_at,
+                   (embedding &lt;=> #{queryVec}::vector) AS distance
             FROM knowledge
             WHERE tenant_id = #{tenantId}
               AND enabled = true
               AND embedding IS NOT NULL
-            ORDER BY (embedding <=> #{queryVec}::vector)
+              <if test="lifecycle != null">
+              AND lifecycle = #{lifecycle}
+              </if>
+            ORDER BY (embedding &lt;=> #{queryVec}::vector)
             LIMIT #{limit}
+            </script>
             """)
     List<Map<String, Object>> searchSimilar(@Param("tenantId") Long tenantId,
                                             @Param("queryVec") String queryVec,
-                                            @Param("limit") int limit);
+                                            @Param("limit") int limit,
+                                            @Param("lifecycle") String lifecycle);
 
     /** 维护条目向量（create/update 后即时写入，启动回填补齐存量）；显式 ::vector 转换字符串字面量。 */
     @Update("UPDATE knowledge SET embedding = #{embedding}::vector WHERE id = #{id}")

@@ -36,9 +36,12 @@ public class KnowledgeController {
     @GetMapping
     public Result<PageResult<KnowledgeEntity>> list(
             @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String recordType,
+            @RequestParam(required = false) String lifecycle,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return Result.ok(knowledgeService.list(TenantContext.requiredTenantId(), keyword, page, size));
+        return Result.ok(knowledgeService.list(TenantContext.requiredTenantId(), keyword,
+                recordType, lifecycle, page, size));
     }
 
     @GetMapping("/{id}")
@@ -46,17 +49,27 @@ public class KnowledgeController {
         return Result.ok(knowledgeService.get(TenantContext.requiredTenantId(), id));
     }
 
-    /** 检索预览：同 Agent 注入的确定性打分，返回 top 命中（含得分），top_k 默认 3。 */
+    /** 取代链遍历：该条目的完整版本演进（最旧 → 最新，含 superseded 中间态），供管理页查看。 */
+    @GetMapping("/{id}/trace")
+    public Result<List<KnowledgeEntity>> trace(@PathVariable Long id) {
+        return Result.ok(knowledgeService.trace(TenantContext.requiredTenantId(), id));
+    }
+
+    /** 检索预览：同 Agent 注入的确定性打分，返回 top 命中（含得分），top_k 默认 3。
+     *  默认仅现行条目（active_only=true，与注入同源）；传 active_only=false 可连被取代/废弃条目一起预览。 */
     @GetMapping("/search")
     public Result<List<Map<String, Object>>> search(@RequestParam String q,
-                                                    @RequestParam(defaultValue = "3") int top_k) {
+                                                    @RequestParam(defaultValue = "3") int top_k,
+                                                    @RequestParam(defaultValue = "true") boolean active_only) {
         List<KnowledgeBaseService.KnowledgeHit> hits =
-                knowledgeService.searchScored(TenantContext.requiredTenantId(), q, top_k);
+                knowledgeService.searchScored(TenantContext.requiredTenantId(), q, top_k, !active_only);
         List<Map<String, Object>> out = hits.stream().map(h -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", h.entry().getId());
             m.put("title", h.entry().getTitle());
             m.put("tags", h.entry().getTags());
+            m.put("recordType", h.entry().getRecordType());
+            m.put("lifecycle", h.entry().getLifecycle());
             m.put("score", h.score());
             return m;
         }).toList();

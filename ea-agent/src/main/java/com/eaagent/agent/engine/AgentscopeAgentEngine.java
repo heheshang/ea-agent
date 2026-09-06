@@ -49,6 +49,7 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +80,16 @@ public class AgentscopeAgentEngine implements AgentEngine {
 
     /** 会话记忆：最多回顾的轮次数。 */
     private static final int MEMORY_ROUNDS = 5;
+    /** 注入冲突优先级（低→高；列表序即注入序）：约束/规则最高，决策/反模式次之，其余兜底。
+     *  语义：硬约束与现行规则优先于经验与事实，避免低优先级条目稀释约束效力。 */
+    private static int priorityOf(String recordType) {
+        return switch (recordType == null ? "" : recordType) {
+            case KnowledgeEntity.TYPE_CONSTRAINT, KnowledgeEntity.TYPE_RULE -> 0;
+            case KnowledgeEntity.TYPE_DECISION, KnowledgeEntity.TYPE_ANTI_PATTERN -> 1;
+            default -> 2;
+        };
+    }
+
     /** 知识库注入：单条内容最大注入长度（防 token 膨胀，超出截断）。 */
     private static final int KNOWLEDGE_CONTENT_LIMIT = 500;
     /** 回顾中单条目标截断长度（防 token 膨胀）。 */
@@ -235,8 +246,15 @@ public class AgentscopeAgentEngine implements AgentEngine {
         if (!kb.isEmpty()) {
             StringBuilder sb = new StringBuilder(
                     "【知识库】以下是系统检索到与本次请求相关度最高的知识库条目（按相关度排序；如无关请忽略，与实时查询结果冲突时以实时查询结果为准）：\n");
-            for (KnowledgeEntity e : kb) {
-                sb.append("- 《").append(e.getTitle()).append('》');
+            // 冲突优先级：约束/规则 > 决策/反模式 > 其余；同类保持相关度序（McMOOSE 优先级符号层，列表序即注入序）
+            List<KnowledgeEntity> ordered = kb.stream().sorted(
+                    Comparator.comparingInt((KnowledgeEntity e) -> priorityOf(e.getRecordType()))
+                            .thenComparing(KnowledgeEntity::getUpdatedAt, Comparator.reverseOrder())
+                            .thenComparingInt(e -> e.getId().intValue()))
+                    .toList();
+            for (KnowledgeEntity e : ordered) {
+                sb.append("- [").append(KnowledgeBaseService.typeLabel(e.getRecordType())).append(']')
+                        .append('《').append(e.getTitle()).append('》');
                 List<String> tags = e.getTags();
                 if (tags != null && !tags.isEmpty()) {
                     sb.append(" 标签：").append(String.join("、", tags));
