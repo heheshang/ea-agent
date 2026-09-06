@@ -37,6 +37,14 @@ http.interceptors.response.use(
     return resp
   },
   (error) => {
+    // HTTP 401（token 过期/无效、租户失效/不匹配）：清 token 回登录页，与业务码分支一致
+    if (error?.response?.status === 401) {
+      localStorage.removeItem('ea:token')
+      if (!location.pathname.startsWith('/login')) {
+        location.href = '/login'
+      }
+      return Promise.reject(error)
+    }
     ElMessage.error(error?.message ?? '网络错误')
     return Promise.reject(error)
   },

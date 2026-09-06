@@ -48,6 +48,8 @@
 
 ### Fixed
 
+- **前端 401 不自动回登录页**：HTTP 层 401（token 过期/无效、租户失效/不匹配，由 `TenantFilter.reject` 返回）此前只弹错误消息不跳转，用户停留在失效会话的页面。axios 响应拦截器 rejection 分支增加 `status === 401` 判定：清除 `ea:token` 并跳转 `/login`（登录页自身不跳），与业务错误码 10002/10003/11003 分支行为一致。
+
 - **触达圈定人群失效（活动误发全量客户）**：根因链——(1) 发送时对 `campaign.audience_id` **实时重算**人群、无任何快照：`sendTouch` 每次触发都重新执行 `audience.rule` DSL，人群规则一改（如"跑步"改成全量条件）即波及已建活动；(2) Agent 侧无圈定人群路径，系统仅"活跃客户"（≈全量）与"邮件验证"两个人群，圈定"跑步"的活动实际绑到活跃客户全量（campaign 22 → 10052 客户）；(3) `queryAudience` 对 DYNAMIC 恒报 0 人，Agent 无法核对规模。修复：campaign 新建/改绑人群时经 `AudienceSnapshotService` **固化 `audience_snapshot` jsonb**（audience_id/audience_name/mode/rule/member_count/customer_ids/snapshot_at；V10 迁移），发送只读快照**不再实时重算**（空快照=空发送）；存量无快照活动（campaign 1/22）首次发送前惰性现算并回填；`AudienceResolver` 对 DYNAMIC 空白规则报 DSL_PARSE_ERROR（防"无 WHERE=租户全量"）；同值改绑保留原快照。
 
 - **Ontology 流程图未注册动作调用无痕丢失**：LLM 幻觉动作名（如 `updateCampaignCooldown`，不在 ActionRegistry）经 parseAction 解析成功后被计入 `engine→tool:applyAction` 路由计数、却因无动作节点映射而不生成节点/边，30 天窗口内 9 次调用在图上完全不可见（且 `engine→applyAction` 66 与各 action 边合计 57 不守恒）。修复：聚合循环对解析出的动作/函数名校验注册集（`actionToObject`/`functionToObject`），未注册名直接跳过双累计——路由边计数与 Action/Function 边合计恒等（57==57、59==59），幻觉调用（执行必失败、图上无拓扑）不再污染图数据。
