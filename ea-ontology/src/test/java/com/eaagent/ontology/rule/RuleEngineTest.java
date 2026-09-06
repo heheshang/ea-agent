@@ -101,4 +101,26 @@ class RuleEngineTest {
     void unknownColumnRejected() {
         assertThrows(BizException.class, () -> sql("password == 'x'"));
     }
+
+    /** 一元 NOT：LLM 常写 `and not (…)`（如排除沉睡客户），此前解析失败抛 E-12003。 */
+    @Test
+    void unaryNotNegatesGroup() {
+        String dsl = "status == 'ACTIVE' && not (tags CONTAINS '沉睡')";
+        String s = sql(dsl);
+        assertTrue(s.contains("AND (NOT ("));
+        assertTrue(s.contains("status"));
+        assertTrue(s.contains("tags"));
+        // jsonb @> containment 把值序列化为数组文本 ["沉睡"]（与正向 CONTAINS 同格式）
+        assertTrue(params(dsl).containsValue("[\"沉睡\"]"));
+    }
+
+    @Test
+    void unaryNotWithoutParens() {
+        assertTrue(sql("not tags CONTAINS 'VIP'").contains("NOT ("));
+    }
+
+    @Test
+    void unaryNotNegatesScalar() {
+        assertTrue(sql("not (status == 'SLEEP')").contains("NOT ("));
+    }
 }

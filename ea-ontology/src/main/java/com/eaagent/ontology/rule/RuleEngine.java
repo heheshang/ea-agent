@@ -23,7 +23,7 @@ import java.util.function.Consumer;
  * expr     := orExpr
  * orExpr   := andExpr (('OR'|'||'|'or') andExpr)*
  * andExpr  := primary (('AND'|'&&'|'and') primary)*
- * primary  := '(' expr ')' | predicate
+ * primary  := ['NOT'] ('(' expr ')' | predicate)   // 一元 NOT 否定（LLM 常写 `and not (…)`）
  * predicate:= path op value
  * path     := ident ('.' ident)*
  * op       := '=='|'='|'!='|'<'|'<='|'>'|'>='|'IN'|'NOT IN'|'CONTAINS'|'LIKE'|'BETWEEN'|'EXISTS'
@@ -36,11 +36,13 @@ import java.util.function.Consumer;
 public final class RuleEngine {
 
     // ---- AST ----
-    private sealed interface Node permits AndNode, OrNode, PredNode {
+    private sealed interface Node permits AndNode, OrNode, NotNode, PredNode {
     }
     private record AndNode(List<Node> children) implements Node {
     }
     private record OrNode(List<Node> children) implements Node {
+    }
+    private record NotNode(Node child) implements Node {
     }
     private record PredNode(String path, String op, Object value) implements Node {
     }
@@ -74,6 +76,10 @@ public final class RuleEngine {
                     }
                 }
             };
+        }
+        if (node instanceof NotNode n) {
+            Consumer inner = build(typeDef, n.child());
+            return w -> ((QueryWrapper) w).not(inner);
         }
         // AndNode
         List<Consumer> cs = ((AndNode) node).children().stream()
@@ -290,6 +296,12 @@ public final class RuleEngine {
 
         private Node primary() {
             skipWs();
+            // 一元 NOT 前缀（LLM 常写 `not (…)` / `NOT condition`）：递归否定一个 primary。
+            // 与二元 NOT IN 不冲突——NOT 位于 primary 起点时其后必为 '(' 或 predicate（path），
+            // 而 NOT IN 的 NOT 出现在已完成 path 的词法之后，由 op() 消费。
+            if (matchWord("NOT")) {
+                return new NotNode(primary());
+            }
             if (pos < src.length() && src.charAt(pos) == '(') {
                 pos++;
                 Node inner = orExpr();

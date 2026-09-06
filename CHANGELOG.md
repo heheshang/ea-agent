@@ -61,6 +61,8 @@
 
 ### Fixed
 
+- **对象查询 DSL 缺一元 `NOT` 运算符（`queryCustomers` 偶发 E-12003）**：LLM 常写 `not (tags CONTAINS '沉睡')` 排除沉睡客户，但 DSL 语法（3.2 EBNF）只支持二元 `NOT IN`，无一元否定——`andExpr` 解析到 primary 起点遇 `not` 时把它当路径、随后找不到操作符而抛 `DSL_PARSE_ERROR`，运行期 `tool exec ok=false` 告警。修复：`primary := ['NOT'] ('(' expr ')' | predicate)` 新增一元否定（递归否定一个 primary，`NotNode` + MP `QueryWrapper.not(consumer)` → `NOT (…)`）；与二元 `NOT IN` 无冲突（NOT IN 的 NOT 在已完成 path 之后由 `op()` 消费，primary 起点 NOT 其后必为 `(`/path）。生成的谓词经真库验证：`status='ACTIVE' AND NOT (tags @> '["沉睡"]')` 正确排除 6 个沉睡客户、余 10046 个活跃客户。回归测试 `unaryNotNegatesGroup/UnaryNotWithoutParens/UnaryNotNegatesScalar` 锁定解析与 SQL；`queryCustomers.filter` 工具 schema 示例补充 `not (…)` 写法引导 LLM。
+
 - **模板审核流恢复（agent 自动建模板绕过审核）**：`CreateTemplateAction`（3d9c235 引入 agent 自动建模板）产物 `review_status` 直出 `APPROVED`，模板页（消息模板 N · 审核流 DRAFT→PENDING→APPROVED）形同虚设——agent 建的模板不经任何人工审核即可被路由/发送，库里 9 条模板 8 条直接 APPROVED、仅 1 条手动提交的 PENDING 无人审。修复：产物改为 `REVIEW_PENDING` 进入人工审核流（REVIEWER 在模板管理页通过/驳回，发送与规则路由仍强校验 APPROVED）；会话审批门控（auto/suggest）只控制 `applyAction` 是否执行，不再替代模板审核。回归测试 `CreateTemplateActionTest` 锁定产物 PENDING。
 
 - **前端 401 不自动回登录页**：HTTP 层 401（token 过期/无效、租户失效/不匹配，由 `TenantFilter.reject` 返回）此前只弹错误消息不跳转，用户停留在失效会话的页面。axios 响应拦截器 rejection 分支增加 `status === 401` 判定：清除 `ea:token` 并跳转 `/login`（登录页自身不跳），与业务错误码 10002/10003/11003 分支行为一致。
