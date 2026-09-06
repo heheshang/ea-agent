@@ -22,6 +22,7 @@ interface ChatMessage {
 }
 
 const goal = ref('查询最近活跃客户并发送优惠')
+const mode = ref<'auto' | 'suggest'>('auto')
 const running = ref(false)
 const runId = ref<number | null>(null)
 const runStatus = ref('')
@@ -30,6 +31,14 @@ const messages = ref<ChatMessage[]>([])
 const thinkingOpen = ref<string[]>(['t'])
 const chatBox = ref<HTMLDivElement | null>(null)
 let es: EventSource | null = null
+
+/** 审批面板：建议模式挂起的写动作（GET /api/agent/approvals，决策 POST）。 */
+const approvals = ref<Row[]>([])
+const approvalVisible = ref(false)
+const approvalLoading = ref(false)
+let approvalTimer: number | null = null
+
+type Row = Record<string, unknown>
 
 /** 运行中无任何助手输出时的占位（首块到达前）。 */
 const awaitingFirst = computed(() => running.value && messages.value.length > 0 && messages.value[messages.value.length - 1].role === 'user')
@@ -170,7 +179,7 @@ async function start() {
     await ensureOntology()
     const sessionId = localStorage.getItem('ea.session_id')
     const r = await post<{ run_id: number; status: string; session_id: string }>(
-      '/agent/chat', { goal: goal.value },
+      '/agent/chat', { goal: goal.value, mode: mode.value },
       sessionId ? { headers: { 'X-Session-Id': sessionId } } : undefined)
     if (r.session_id) localStorage.setItem('ea.session_id', r.session_id)
     runId.value = r.run_id
@@ -266,7 +275,10 @@ onActivated(() => {
   refreshRuns()
   loadSessionHistoryIntoMessages()
 })
-onBeforeUnmount(() => es?.close())
+onBeforeUnmount(() => {
+  es?.close()
+  if (approvalTimer != null) clearInterval(approvalTimer)
+})
 
 watch(messages, () => {
   nextTick(() => {
@@ -279,12 +291,63 @@ function pretty(data: unknown): string {
   if (typeof data === 'string') return data
   return JSON.stringify(data, null, 2)
 }
+
+/** 待批列表加载 + 打开时 10s 轮询。 */
+async function loadApprovals() {
+  approvalLoading.value = true
+  try {
+    approvals.value = (await get<Row[]>('/agent/approvals', { status: 'pending' })) ?? []
+  } catch {
+    approvals.value = []
+  } finally {
+    approvalLoading.value = false
+  }
+}
+
+function openApprovals() {
+  approvalVisible.value = true
+  loadApprovals()
+  approvalTimer = window.setInterval(loadApprovals, 10000)
+}
+
+function closeApprovals() {
+  approvalVisible.value = false
+  if (approvalTimer != null) {
+    clearInterval(approvalTimer)
+    approvalTimer = null
+  }
+}
+
+async function decideApproval(id: string, approved: boolean) {
+  await post(`/agent/approvals/${id}/decision`, { approved })
+  ElMessage.success(approved ? '已批准并执行' : '已拒绝')
+  loadApprovals()
+}
+
+function approvalActionLabel(a: Row): string {
+  return String(a.action ?? '-')
+}
+
+function approvalArgs(a: Row): string {
+  const args = a.args
+  return args == null ? '-' : JSON.stringify(args, null, 2)
+}
 </script>
 
 <template>
   <div class="wb">
     <div v-if="currentRunLabel" class="run-label">
       <span class="run-chip">{{ currentRunLabel }}</span>
+    </div>
+
+    <div class="wb-toolbar">
+      <el-radio-group v-model="mode" size="small">
+        <el-radio-button value="auto">auto（直接执行）</el-radio-button>
+        <el-radio-button value="suggest">suggest（写动作待审批）</el-radio-button>
+      </el-radio-group>
+      <el-badge :value="approvals.length" :hidden="approvals.length === 0" :offset="[2, 2]">
+        <el-button size="small" @click="openApprovals">待批审批</el-button>
+      </el-badge>
     </div>
 
     <el-row :gutter="16" class="wb-row">
@@ -364,6 +427,34 @@ function pretty(data: unknown): string {
         </el-card>
       </el-col>
     </el-row>
+
+    <el-dialog v-model="approvalVisible" title="建议模式 · 待批审批" width="880px" destroy-on-close @closed="closeApprovals">
+      <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
+        建议模式下写动作挂起于此（suggest 会话）；批准后按原请求身份执行，拒绝则仅记录。需 REVIEWER 及以上角色决策。
+      </div>
+      <el-table v-loading="approvalLoading" :data="approvals" size="small" stripe>
+        <el-table-column prop="created_at" label="提交时间" width="170">
+          <template #default="{ row }">{{ row.created_at ?? '-' }}</template>
+        </el-table-column>
+        <el-table-column label="动作" width="150">
+          <template #default="{ row }">{{ approvalActionLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column label="参数" min-width="260">
+          <template #default="{ row }">
+            <pre class="approval-args">{{ approvalArgs(row) }}</pre>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" align="right">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" @click="decideApproval(String(row.id), true)">批准执行</el-button>
+            <el-button size="small" type="danger" @click="decideApproval(String(row.id), false)">拒绝</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="暂无待批项" :image-size="60" />
+        </template>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -388,6 +479,20 @@ function pretty(data: unknown): string {
 }
 .run-label {
   margin-bottom: 12px;
+}
+.wb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.approval-args {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #606266;
 }
 .run-chip {
   display: inline-block;

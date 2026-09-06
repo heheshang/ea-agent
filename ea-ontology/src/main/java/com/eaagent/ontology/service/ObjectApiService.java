@@ -307,12 +307,12 @@ public class ObjectApiService {
             }
             out.put(f.name(), f.sensitive() && v instanceof String s ? MaskUtils.maskByKey(f.name(), s) : v);
         }
-        // jsonb 大容器：attributes / payload / trigger_rule 全量投影（键级掩码由 JsonMasker 统一递归）
+        // jsonb 大容器：attributes / payload / trigger_rule / workflow 全量投影（键级掩码由 JsonMasker 统一递归）
         // JsonUtils.toMap 输出驼峰 key（Jackson convertValue），API 契约用下划线名
         for (String[] entry : new String[][]{
                 {"attributes", "attributes"}, {"payload", "payload"},
                 {"triggerRule", "trigger_rule"}, {"frequencyLimit", "frequency_limit"}, {"tags", "tags"},
-                {"audienceSnapshot", "audience_snapshot"}}) {
+                {"audienceSnapshot", "audience_snapshot"}, {"workflow", "workflow"}}) {
             Object v = src.get(entry[0]);
             if (v != null) {
                 out.put(entry[1], v);

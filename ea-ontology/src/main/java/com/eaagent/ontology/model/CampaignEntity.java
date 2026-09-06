@@ -26,6 +26,7 @@ public class CampaignEntity {
     public static final String COL_OWNER_ID = "owner_id";
     public static final String COL_TRIGGER_RULE = "trigger_rule";
     public static final String COL_AUDIENCE_SNAPSHOT = "audience_snapshot";
+    public static final String COL_WORKFLOW = "workflow";
     public static final String COL_STATUS = "status";
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
@@ -55,6 +56,9 @@ public class CampaignEntity {
     /** jsonb 人群快照：创建/换人群时固化的圈定成员 {audience_id,audience_name,mode,rule,member_count,customer_ids,snapshot_at}；空=存量待回填。 */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private java.util.Map<String, Object> audienceSnapshot;
+    /** jsonb 多通道编排 DAG：节点数组 [{id, channel, template_id, condition, next}]；空/不配=单通道单模板活动。 */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private java.util.List<java.util.Map<String, Object>> workflow;
     private String status;             // DRAFT|SCHEDULED|RUNNING|PAUSED|FINISHED|FAILED
     private Instant createdAt;
     private Instant updatedAt;

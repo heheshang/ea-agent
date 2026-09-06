@@ -11,6 +11,7 @@ import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.model.AgentRunEntity;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -36,12 +38,15 @@ public class AgentChatController {
     private final AgentService agentService;
     private final AgentRunMapper runMapper;
     private final ThreadPoolTaskExecutor sseExecutor;
+    private final StringRedisTemplate redis;
 
     public AgentChatController(AgentService agentService, AgentRunMapper runMapper,
-                               @Qualifier("sseExecutor") ThreadPoolTaskExecutor sseExecutor) {
+                               @Qualifier("sseExecutor") ThreadPoolTaskExecutor sseExecutor,
+                               StringRedisTemplate redis) {
         this.agentService = agentService;
         this.runMapper = runMapper;
         this.sseExecutor = sseExecutor;
+        this.redis = redis;
     }
 
     @PostMapping("/chat")
@@ -52,9 +57,14 @@ public class AgentChatController {
         }
         String sessionId = sessionIdHeader != null && !sessionIdHeader.isBlank()
                 ? sessionIdHeader : UUID.randomUUID().toString();
+        // 会话模式持久化（建议模式门控读 ea:agent:mode:{tenant}:{session}；非法/缺省 = auto 直接执行）
+        String mode = req.getMode() == null ? "auto"
+                : ("suggest".equals(req.getMode()) || "auto".equals(req.getMode())) ? req.getMode() : "auto";
+        redis.opsForValue().set("ea:agent:mode:" + TenantContext.requiredTenantId() + ":" + sessionId,
+                mode, Duration.ofSeconds(86400));
         AgentRunEntity run = agentService.startRun(TenantContext.requiredTenantId(),
                 TenantContext.userId(), TenantContext.role(), req.getGoal(), sessionId);
-        return Result.ok(Map.of("run_id", run.getId(), "status", run.getStatus(), "session_id", sessionId));
+        return Result.ok(Map.of("run_id", run.getId(), "status", run.getStatus(), "session_id", sessionId, "mode", mode));
     }
 
     @GetMapping("/chat")

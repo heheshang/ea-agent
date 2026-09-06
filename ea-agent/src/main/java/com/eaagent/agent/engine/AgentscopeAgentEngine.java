@@ -260,7 +260,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
     public Flux<EngineEvent> stream(RunContext rc, String userInput) {
         HarnessAgent a = sessions.computeIfAbsent(rc.sessionId(), sid -> {
             Toolkit tk = new Toolkit();
-            for (AgentTool t : toolRegistry.forTenant(rc.tenantId(), rc.userId(), rc.role())) {
+            for (AgentTool t : toolRegistry.forTenant(rc.tenantId(), rc.userId(), rc.role(), rc.sessionId())) {
                 tk.registerAgentTool(t);
             }
             // MCP（ADR-5 落地）：外部工具经 MCP 协议并入工具集，LLM 侧与本地工具无感知差异。

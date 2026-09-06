@@ -28,6 +28,7 @@ import io.agentscope.core.tool.Toolkit;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -55,12 +56,14 @@ public class AgentToolRegistry {
     private final FunctionRegistry functionRegistry;
     private final RuleEngine ruleEngine;
     private final AudienceResolver audienceResolver;
+    private final StringRedisTemplate redis;
 
     public AgentToolRegistry(CustomerMapper customerMapper, CampaignMapper campaignMapper,
                              DeliveryMapper deliveryMapper, EventMapper eventMapper,
                              AudienceMapper audienceMapper,
                              ActionRegistry actionRegistry, FunctionRegistry functionRegistry,
-                             RuleEngine ruleEngine, AudienceResolver audienceResolver) {
+                             RuleEngine ruleEngine, AudienceResolver audienceResolver,
+                             StringRedisTemplate redis) {
         this.customerMapper = customerMapper;
         this.campaignMapper = campaignMapper;
         this.deliveryMapper = deliveryMapper;
@@ -70,6 +73,7 @@ public class AgentToolRegistry {
         this.functionRegistry = functionRegistry;
         this.ruleEngine = ruleEngine;
         this.audienceResolver = audienceResolver;
+        this.redis = redis;
     }
 
     /** 基础 Toolkit（资源型工具，非租户绑定）。 */
@@ -79,10 +83,15 @@ public class AgentToolRegistry {
 
     /** 指定租户 + 会话身份（发起用户）的工具集（供 agentscope 引擎注册）：applyAction 以用户身份做权限校验（9.2 权限下放）。 */
     public List<AgentTool> forTenant(Long tenantId, Long userId, String role) {
+        return forTenant(tenantId, userId, role, null);
+    }
+
+    /** 会话级工具集：sessionId 参与建议模式门控（suggest 下写动作挂起人工审批，见 ApplyAction.execute）。 */
+    public List<AgentTool> forTenant(Long tenantId, Long userId, String role, String sessionId) {
         return List.of(
                 new QueryCustomers(tenantId, userId, role), new QueryAudience(tenantId, userId, role),
                 new GetCampaign(tenantId, userId, role), new QueryDelivery(tenantId, userId, role),
-                new QueryEvents(tenantId, userId, role), new ApplyAction(tenantId, userId, role),
+                new QueryEvents(tenantId, userId, role), new ApplyAction(tenantId, userId, role, sessionId),
                 new CallFunction(tenantId, userId, role));
     }
 
@@ -325,12 +334,22 @@ public class AgentToolRegistry {
     }
 
     /** applyAction：动作执行（设计 3.4）。 */
+    /** 建议模式下挂起人工审批的写动作（importEvents 属流水线入口，不挂起）。 */
+    private static final java.util.Set<String> WRITE_ACTIONS =
+            java.util.Set.of("createTemplate", "createCampaign", "updateCampaign", "createAudience",
+                    "updateCustomerState", "pauseCampaign", "sendTouch");
+    /** 待审批列表键（LRANGE 全部 + LREM/rightPush 更新；ApprovalService 消费）。 */
+    static final String APPROVAL_PENDING_KEY = "ea:agent:approval:pending";
+
     class ApplyAction extends BaseTool {
-        ApplyAction(Long tenantId, Long userId, String role) {
+        private final String sessionId;
+
+        ApplyAction(Long tenantId, Long userId, String role, String sessionId) {
             super(tenantId, userId, role, "applyAction", describeActions(),
                     schema(Map.of("action", pStr("动作名（registered " + actionRegistry.all().size() + " 选一）"),
                                     "args", pObj("动作参数对象（键用下划线形式，如 campaign_id；各动作必需字段见 applyAction 描述，多余字段忽略）")),
                             List.of("action", "args")));
+            this.sessionId = sessionId;
         }
 
         @Override
@@ -347,6 +366,10 @@ public class AgentToolRegistry {
                 log.warn("applyAction rejected tenantId={} action={} reason={}", tenantId, action, ruleErr);
                 return Map.of("ok", false, "error", ruleErr);
             }
+            // 建议模式门控：会话模式为 suggest 且属写动作 → 不入库执行，挂起人工审批
+            if (sessionId != null && WRITE_ACTIONS.contains(action) && isSuggestMode()) {
+                return gatePending(action, norm);
+            }
             ActionContext ctx = ActionContext.of(tenantId, userId, role, "tool:" + UUID.randomUUID());
             ActionResult r = actionRegistry.get(action)
                     .execute(ctx, com.eaagent.ontology.action.ActionRequest.of(norm));
@@ -354,11 +377,48 @@ public class AgentToolRegistry {
             out.put("ok", r.success());
             return out;
         }
+
+        /** 会话模式读取：ea:agent:mode:{tenant}:{session}，suggest → 写动作挂起。 */
+        private boolean isSuggestMode() {
+            try {
+                String mode = redis.opsForValue().get("ea:agent:mode:" + tenantId + ":" + sessionId);
+                return "suggest".equals(mode);
+            } catch (Exception e) {
+                log.warn("mode read failed tenantId={} session={}: {}", tenantId, sessionId, e.toString());
+                return false;
+            }
+        }
+
+        /** 挂起待批：待批列表 rightPush JSON entry，返回 PENDING_APPROVAL（LLM 向用户说明等待审批，run 正常 COMPLETED）。 */
+        private Map<String, Object> gatePending(String action, Map<String, Object> norm) {
+            String approvalId = UUID.randomUUID().toString();
+            Map<String, Object> entry = new java.util.LinkedHashMap<>();
+            entry.put("id", approvalId);
+            entry.put("tenant_id", tenantId);
+            entry.put("user_id", userId);
+            entry.put("role", role);
+            entry.put("session_id", sessionId);
+            entry.put("action", action);
+            entry.put("args", norm);
+            entry.put("status", "PENDING");
+            entry.put("created_at", java.time.Instant.now().toString());
+            try {
+                redis.opsForList().rightPush(APPROVAL_PENDING_KEY, JsonUtils.write(entry));
+            } catch (Exception e) {
+                log.error("approval pending push failed tenantId={} action={}: {}", tenantId, action, e.toString());
+                return Map.of("ok", false, "error", "审批挂起写入失败: " + e.getMessage());
+            }
+            log.info("applyAction gated tenantId={} session={} action={} approvalId={}",
+                    tenantId, sessionId, action, approvalId);
+            return Map.of("ok", false, "status", "PENDING_APPROVAL", "approval_id", approvalId,
+                    "action", action,
+                    "message", "建议模式：动作已提交人工审批（等待批准后执行）");
+        }
     }
 
     /** applyAction 工具描述：动态枚举动作与必需字段（LLM 无需猜参数名）。 */
     private String describeActions() {
-        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略）。registered："
+        return "执行运营动作（字段名用下划线形式，如 campaign_id；只传必需字段，多余字段忽略；建议模式 suggest 下写动作返回 PENDING_APPROVAL=已提交人工审批，向用户说明等待审批即可）。registered："
                 + actionRegistry.all().values().stream()
                         .sorted(java.util.Comparator.comparing(a -> a.meta().name()))
                         .map(a -> a.meta().name() + "（" + a.meta().description()

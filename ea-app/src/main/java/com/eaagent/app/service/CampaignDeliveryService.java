@@ -46,7 +46,8 @@ public class CampaignDeliveryService {
                 .select(DeliveryEntity.COL_ID, DeliveryEntity.COL_CUSTOMER_ID, DeliveryEntity.COL_CHANNEL,
                         DeliveryEntity.COL_TEMPLATE_ID, DeliveryEntity.COL_CHANNEL_MSG_ID,
                         DeliveryEntity.COL_STATUS, DeliveryEntity.COL_ERROR,
-                        DeliveryEntity.COL_ATTEMPT, DeliveryEntity.COL_CREATED_AT, DeliveryEntity.COL_UPDATED_AT)
+                        DeliveryEntity.COL_ATTEMPT, DeliveryEntity.COL_WORKFLOW_NODE,
+                        DeliveryEntity.COL_CREATED_AT, DeliveryEntity.COL_UPDATED_AT)
                 .eq(DeliveryEntity.COL_TENANT_ID, tenantId)
                 .eq(DeliveryEntity.COL_CAMPAIGN_ID, campaignId)
                 .orderByDesc(DeliveryEntity.COL_CREATED_AT)
@@ -73,6 +74,7 @@ public class CampaignDeliveryService {
             out.put("status", d.getStatus());
             out.put("error", d.getError());
             out.put("attempt", d.getAttempt());
+            out.put("workflow_node", d.getWorkflowNode());
             out.put("created_at", d.getCreatedAt() == null ? null : d.getCreatedAt().toString());
             out.put("updated_at", d.getUpdatedAt() == null ? null : d.getUpdatedAt().toString());
             CustomerEntity c = customers.get(d.getCustomerId());

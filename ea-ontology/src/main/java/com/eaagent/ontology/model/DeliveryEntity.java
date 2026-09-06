@@ -23,6 +23,7 @@ public class DeliveryEntity {
     public static final String COL_STATUS = "status";
     public static final String COL_ERROR = "error";
     public static final String COL_ATTEMPT = "attempt";
+    public static final String COL_WORKFLOW_NODE = "workflow_node";
     public static final String COL_CREATED_AT = "created_at";
     public static final String COL_UPDATED_AT = "updated_at";
 
@@ -46,6 +47,7 @@ public class DeliveryEntity {
     private String status;         // PENDING|SENT|DELIVERED|BOUNCED|FAILED|UNSUBSCRIBED
     private String error;
     private Integer attempt;
+    private String workflowNode;   // DAG 节点 id（workflow 活动标记来源节点；非 DAG 为 null）
     private Instant createdAt;
     private Instant updatedAt;
 }

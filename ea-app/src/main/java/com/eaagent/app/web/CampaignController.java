@@ -66,6 +66,7 @@ public class CampaignController {
         args.put("schedule", req.getSchedule() == null ? null : req.getSchedule().toString());
         args.put("cron", req.getCron());
         args.put("template_routing", req.getTemplateRouting());
+        args.put("workflow", req.getWorkflow());
         args.put("trigger_rule", req.getTriggerRule());
         return Result.ok(actionRegistry.get("createCampaign").execute(ctx, ActionRequest.of(args)).data());
     }
@@ -83,6 +84,7 @@ public class CampaignController {
         args.put("schedule", req.getSchedule() == null ? null : req.getSchedule().toString());
         args.put("cron", req.getCron());
         args.put("template_routing", req.getTemplateRouting());
+        args.put("workflow", req.getWorkflow());
         args.put("trigger_rule", req.getTriggerRule());
         return Result.ok(actionRegistry.get("updateCampaign").execute(ctx, ActionRequest.of(args)).data());
     }

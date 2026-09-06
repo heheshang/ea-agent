@@ -1,5 +1,6 @@
 package com.eaagent.agent.bus;
 
+import com.eaagent.agent.action.WorkflowExecutor;
 import com.eaagent.common.Actors;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.common.TenantContext;
@@ -42,11 +43,14 @@ public class EventConsumer {
     private final StringRedisTemplate redis;
     private final CampaignMapper campaignMapper;
     private final ActionRegistry actionRegistry;
+    private final WorkflowExecutor workflowExecutor;
 
-    public EventConsumer(StringRedisTemplate redis, CampaignMapper campaignMapper, ActionRegistry actionRegistry) {
+    public EventConsumer(StringRedisTemplate redis, CampaignMapper campaignMapper,
+                         ActionRegistry actionRegistry, WorkflowExecutor workflowExecutor) {
         this.redis = redis;
         this.campaignMapper = campaignMapper;
         this.actionRegistry = actionRegistry;
+        this.workflowExecutor = workflowExecutor;
     }
 
     @PostConstruct
@@ -110,7 +114,12 @@ public class EventConsumer {
                             "campaign_id", c.getId(),
                             "event_type", eventType,
                             "event_payload", payload));
-                    actionRegistry.get("sendTouch").execute(ctx, req);
+                    // 多通道编排活动走 DAG 执行器（事件驱动逐节点推进）；否则原单通道 sendTouch 管线
+                    if (c.getWorkflow() != null && !c.getWorkflow().isEmpty()) {
+                        workflowExecutor.execute(tenantId, c, eventType, payload);
+                    } else {
+                        actionRegistry.get("sendTouch").execute(ctx, req);
+                    }
                 }
             }
             log.info("event {} matched {} campaign(s)", recordId, matched);

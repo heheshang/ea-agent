@@ -1,7 +1,7 @@
 # EA-Agent 全链路数据流程图
 
 > **EA-Agent · 多通道运营触达智能体（SaaS 多租户）**
-> 版本：v1.5 · 类型：流程设计文档 · 状态：设计定稿
+> 版本：v1.6 · 类型：流程设计文档 · 状态：设计定稿
 > 对应：详细设计 v1.7（3.5 事件流 / 3.6 调度 / 6 通道层 / 8 数据架构 / 9 安全 / 10 时序）· 总体架构 v1.5（3.1 分层 / 9.3 时序）· 技术栈设计 v0.1（工程基线）
 
 ## 1. 文档定位与图例
@@ -132,9 +132,10 @@ flowchart LR
 
 要点：
 
-- 调度与事件链路殊途同归：都收敛到 `sendTouch`（3.6；10.1 步骤 1 同路径）。
+- 调度与事件链路殊途同归：都收敛到 `sendTouch` 或 DAG 执行器（3.6；10.1 步骤 1 同路径）。
+- **多通道编排（v1.6）**：`campaign.workflow`（jsonb 节点数组，V13）非空的活动由 `WorkflowExecutor` 按拓扑序逐客户执行——根节点（无入边）开始，前驱任一非 SENT/DELIVERED 则跳过该节点，`condition`（分组 event/customer/prev）命中才 `sendOneCustomer`，成功（SENT/DELIVERED）才沿 `next` 递归推进；每次触达落 `delivery.workflow_node` 标记来源节点。单模板/多路由活动仍走 sendTouch 原管线（零回归）。
 - 锁：`RedisLock.tryLock`（2.2）保证多实例只触发一次；暂停 `PAUSED` 跳过；进程崩溃由启动时 `RUNNING + updated_at 超时 → FAILED` 兜底（3.6）。
-- 与 A-2 汇合点：事件命中与调度触发都经 ActionService.execute(sendTouch)，共用校验管线与落库。
+- 与 A-2 汇合点：事件命中与调度触发都经 ActionService.execute(sendTouch) 或 WorkflowExecutor，共用校验管线与落库。
 
 ### 3.4 A-4 触达发送
 
@@ -150,6 +151,9 @@ flowchart LR
   CH -->|"成功"| UP["delivery SENT + channel_msg_id"]
   MB -->|"变量缺失"| ERR[("失败 参数错误 E-10001")]
   CH -->|"失败 1s/4s/16s ×3"| RT["重试 → 仍失败 FAILED + EA-Bus 告警"]
+  WFE["WorkflowExecutor（DAG 活动）"] -->|"按节点 sendOneCustomer（节点通道/模板 + 条件 prev）"| AD
+  WFO["EventConsumer 消费命中"] -->|"campaign.workflow 非空 → WorkflowExecutor 拓扑序逐客户 DFS（成功才推进 next）"| WFE
+  WFO -->|"campaign.workflow 为空 → sendTouch Action 原管线"| TOUCH
 ```
 
 要点：
@@ -227,6 +231,8 @@ flowchart LR
 - 会话状态机全程持久化：`agent_run`（4.3 八态）落库点为创建（NEW）、审批（AWAITING_APPROVAL）、完成/失败/取消；`plan`/`decisions` 全量可回放（9.4）。
 - 工具边界：LLM 只能经 ToolRegistry 白名单调用（9.6）；对象查询强制租户过滤 + `audience.owner_id` 归属校验（5.4，E-12002）；返回 LLM 的数据手机号/邮箱掩码（9.6 脱敏视图）。
 - 写操作唯一出口是 Action 管线：工具内的 `sendTouch` 等走链路 A 的完整校验，Agent 无绕过通道；高危动作经权限推断进审批（10.2 步骤 5）。
+- **会话审批门控（v1.6）**：web 对话在 POST /api/agent/chat 时携带 `mode`（auto 直接执行 / suggest 写动作挂起），落 `ea:agent:mode:{tenant}:{session}`（TTL 1d）；suggest 模式下 `applyAction` 对写动作（createTemplate/createCampaign/updateCampaign/createAudience/updateCustomerState/pauseCampaign/sendTouch，importEvents 除外）不入库执行，挂起到 Redis List `ea:agent:approval:pending`（entry 含 action/args/状态），返回 `PENDING_APPROVAL`；审批面板 GET /api/agent/approvals 列表、POST /api/agent/approvals/{id}/decision（REVIEWER 及以上）——批准以原请求身份执行动作，拒绝不执行。**createTemplate 产物即 APPROVED**（审批职责由会话门控承担，否则自动模式模板永久拒发）。
+- **createTemplate 工具（v1.6）**：`createCampaign` 校验 template_id 缺失或不存在即报可读错误（提示先调 createTemplate）；模板内容变量从 `{{...}}` 提取为 `vars` 返回，供活动编排与条件分支复用。
 - 与 EA-Bus 分离：SSE 传的是 Agent 会话事件（4.6 协议表），不回传业务事件流。
 
 ## 5. 链路 C：管理与配置流
@@ -268,10 +274,10 @@ flowchart LR
 | customer | 客户导入/对象 API | 触达选人、事件关联、Agent 查询 | UNIQUE `(tenant_id,external_id)` (666) + `(tenant_id,id)` (667) | 常驻 |
 | audience | 人群创建（链路 C） | 触达选人、审批展示 | owner FK (676)、UNIQUE `(tenant_id,id)` (679)、chk_audience_mode (680) | 常驻 |
 | audience_member | STATIC 人群成员导入 | 人群成员反查 | 复合 FK ×2 (689-690)、UNIQUE `(tenant_id,audience_id,customer_id)` (692) | 常驻 |
-| campaign | 任务编排（链路 C） | 调度器、事件匹配、审批 | 复合 FK ×2 (699,701)、owner FK (708)、UNIQUE `(tenant_id,id)` (718) | 常驻 |
-| template | 模板管理（链路 C） | 触达渲染、审批 | UNIQUE `(tenant_id,id)` (730) | 常驻 |
+| campaign | 任务编排（链路 C） | 调度器、事件匹配、审批、DAG 执行器 | 复合 FK ×2 (699,701)、owner FK (708)、UNIQUE `(tenant_id,id)` (718)、`workflow` jsonb 节点数组 (V13) | 常驻 |
+| template | 模板管理（链路 C，含 agent createTemplate 直建） | 触达渲染、审批、DAG 节点模板 | UNIQUE `(tenant_id,id)` (730) | 常驻 |
 | channel_config | 通道配置（链路 C） | 发送解密、回执验签 | `callback_secret` 密文 (740)、UNIQUE `(tenant_id,channel)` (742) | 常驻 |
-| delivery | A-4 发送、A-5 回调 | 监控、复盘、重试 | UNIQUE `(tenant_id,request_id)` (762) + `(tenant_id,channel_msg_id)` (763) | 按月分区，旧分区归档 |
+| delivery | A-4 发送、A-5 回调、DAG 逐节点发送 | 监控、复盘、重试、节点溯源 | UNIQUE `(tenant_id,request_id)` (762) + `(tenant_id,channel_msg_id)` (763)、`workflow_node` (V13) | 按月分区，旧分区归档 |
 | event | A-1 导入 | A-2 消费匹配、Agent 复盘事件史 | 复合 FK customer (769)、UNIQUE `(tenant_id,dedup_key)` (774) | 默认 90 天归档删除 |
 | unsubscribe | A-5 回执退订、用户主动退订（POST /api/unsubscribe，9.5） | A-4 发送前查重 | UNIQUE `(customer_key,channel)` 全局 (784) | 常驻（平台级） |
 | agent_run | 链路 B 全状态 | 会话恢复、审计回放（含 tokens_used 计量） | user FK (791)、tokens_used (797) | 长期保留，两年压缩 |
@@ -291,6 +297,8 @@ flowchart LR
 | `ea:cb:{channel}` | 通道熔断计数 | 熔断窗口 60s |
 | `RedisLock`（`ea:lock:*`） | 调度/幂等/审批并发互斥 | 锁 TTL |
 | AgentSession（`agent:session:*`） | 会话状态 + 租户绑定 | 会话生命周期 |
+| `ea:agent:mode:{tenant}:{session}` | 会话模式（auto/suggest，web chat 写入） | TTL 1d |
+| `ea:agent:approval:pending` | 建议模式挂起的写动作审批队列（JSON entry List） | 决策后保留（APPROVED/REJECTED 状态） |
 
 ### 7.2 去重与幂等重点总表
 
@@ -349,3 +357,4 @@ flowchart LR
 | v1.3 | 2026-09-04 | 同步详细设计 v1.5（AB 实验）：§6 全表行号引用重对齐至当前 8.1 DDL（含原漂移修正：delivery 762/763、event 769/774、unsubscribe 784、agent_run 791 等）；campaign 行补 AB 三列（705-707）、delivery 行补 ab_group（755）；7.2 去重总表补「AB 分组」行（SHA256 确定性分桶）；§5 复合 FK 纵深标注 v1.3 |
 | v1.4 | 2026-09-04 | 同步详细设计 v1.6 / 架构 v1.4：登记技术栈设计文档（ea-agent-tech-stack.md v0.1，Redis 实现要点与 key 命名空间对齐 7.1）；5 章边界表租户过滤实现措辞对齐（应用层显式 tenant_id 条件 + 复合 FK 兜底，不用租户插件重写 SQL） |
 | v1.5 | 2026-09-06 | 同步详细设计 v1.7 / 架构 v1.5 / 代码 V12（移除灰度与 AB 实验机制）：§6 campaign 行去「AB 分桶」读点与 chk_campaign_ab / ab 三列约束、delivery 行去「ab-report 聚合」与 ab_group 约束；7.2 去重总表删「AB 分组」行；冷却窗（ea:cd）设计移除后 7.1 key 清单与措辞同步；头部对应版本更新为 v1.5 |
+| v1.6 | 2026-09-06 | 多通道编排 + 会话门控（代码 V13）：§3.4 A-4 触达发送补 WorkflowExecutor / EventConsumer DAG 分支与要点（campaign.workflow jsonb 节点数组、逐客户 DFS、delivery.workflow_node 溯源）；§4 链路 B 补会话审批门控（ea:agent:mode / ea:agent:approval:pending、suggest 挂起写动作、REVIEWER 决策）与 createTemplate 工具；§6 campaign/template/delivery 行标注 workflow 与 V13；7.1 key 清单补两键；头部版本更新为 v1.6 |

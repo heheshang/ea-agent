@@ -1,7 +1,7 @@
 # 基于 Ontology 底座的 AI-Agent 智能运营系统 · 总体架构文档
 
 > **EA-Agent · 多通道运营触达智能体（SaaS 多租户）**
-> 版本：v1.4 · 类型：总体架构文档 · 状态：设计定稿
+> 版本：v1.6 · 类型：总体架构文档 · 状态：设计定稿
 > 技术栈：Vue3 + TypeScript + Element Plus ｜ Spring Boot + MyBatis-Plus + PostgreSQL + Redis + agentscope-java-2.0 + Lombok
 
 ---
@@ -145,6 +145,7 @@
 ### 4.2 动力层：事件、异步与调度
 
 - **事件驱动**：`importEvents` 接收业务事件 → 业务事件总线（EA-Bus，Redis Stream）→ 消费端匹配触达任务 → 触发 Action；接收即返回，执行解耦
+- **多通道编排（DAG）**：活动可配 `workflow`（jsonb 节点数组：通道 + 模板 + 条件 + next）；`EventConsumer` 消费命中后 `WorkflowExecutor` 按拓扑序逐客户执行，前驱发送成功（SENT/DELIVERED）才推进下一节点，条件分支评估 event/customer/prev 三类；单模板活动零回归走 sendTouch 原管线
 - **异步执行**：触达发送入异步队列，任务提交即返回；结果落 Delivery，支持重试与回执回调（Webhook）
 - **调度**：定时/周期任务（每日提醒、周期性营销）由调度器扫描触发
 - **幂等**：事件与触达均带 `dedup_key` / 请求 ID，`(tenant_id, dedup_key)` 唯一，重放安全
@@ -157,6 +158,7 @@
 |---|---|---|---|
 | sendTouch | customer / channel / template / 请求ID | 权限、频控、退订、时段、地址完备 | 异步触达 → Delivery |
 | createCampaign | 人群 / 渠道 / 模板 / 时间 | 权限、模板审核状态 | 新建任务 |
+| createTemplate | 模板（通道 / 标题 / 内容） | 权限 | 新建模板（agent 自动建模板入口；产物即 APPROVED，审核职责由会话门控承担） |
 | pauseCampaign | campaign | 权限 | 暂停任务 |
 | updateCustomerState | customer / 状态 | 权限 | 更新画像状态 |
 | importEvents | events[] | 权限、幂等去重 | 入业务事件总线（EA-Bus） |
@@ -240,6 +242,8 @@ new → planning → awaiting_approval ──审批通过──→ executing →
 - **自动模式（显式授权）**：授权范围内自动执行；超阈值/高危动作强制转人工
 - **审计**：`agent_run` 记录目标、规划、决策理由与每次 Action 调用，全程可回放
 
+**会话级门控落点（v1.6 实现）**：web 对话 `POST /api/agent/chat` 携带 `mode`（auto / suggest），写 `ea:agent:mode:{tenant}:{session}`（TTL 1d）；suggest 模式下 ToolRegistry 对写动作（createTemplate / createCampaign / updateCampaign / createAudience / updateCustomerState / pauseCampaign / sendTouch，importEvents 除外）**不入库执行**，挂起 Redis List `ea:agent:approval:pending` 返回 `PENDING_APPROVAL`；等待人工经 `GET /api/agent/approvals` + `POST /api/agent/approvals/{id}/decision` 决策（REVIEWER 及以上），批准按原请求身份执行。auto 模式写动作直接执行。
+
 平台支撑：AgentScope Java 2.0 原生**工具权限系统**（allow / require approval / deny）与 31 类 Agent 会话事件流（实时前端渲染 + 人在环）[6] —— 映射关系：建议模式 = require approval；自动模式 = allow（限定工具）。对照 Palantir AIP Chatbot Studio（原 Agent Studio）：LLM + Ontology + 文档 + 自定义工具，平台只授予任务所需最小权限 [7]。
 
 ### 5.5 记忆与上下文管理
@@ -274,7 +278,8 @@ new → planning → awaiting_approval ──审批通过──→ executing →
 | `/api/campaigns` | 任务 CRUD |
 | `/api/actions/*` | Action 执行（写，含校验与审计） |
 | `/api/channels` | 通道配置 |
-| `/api/agent/chat` | Agent 对话（SSE 流式） |
+| `/api/agent/chat` | Agent 对话（SSE 流式；body 含 mode=auto/suggest） |
+| `/api/agent/approvals` | 建议模式待批列表（GET）与决策（POST /{id}/decision，REVIEWER+） |
 | `/api/tenant/*` | 租户管理、配额与计量（平台侧） |
 
 通用约定：REST + 统一错误结构；写操作幂等（请求 ID）；租户上下文经网关注入 `X-Tenant-Id`。
@@ -366,7 +371,7 @@ audience        (id, tenant_id, name, mode, rule, owner_id, status, created_at)
 audience_member (tenant_id, audience_id, customer_id, created_at)
 
 campaign        (id, tenant_id, name, audience_id, audience_snapshot jsonb,
-                 channel, template_id,
+                 channel, template_id, workflow jsonb,   -- 多通道编排 DAG 节点数组 [{id,channel,template_id,condition,next}]
                  schedule, owner_id, status, ...)
 template        (id, tenant_id, channel, title, content, vars jsonb, status,
                  review_status)
@@ -374,7 +379,8 @@ channel_config  (id, tenant_id, channel, config_encrypted, enabled,
                  frequency_limit jsonb)
 
 delivery        (id, tenant_id, campaign_id, customer_id, channel,
-                 channel_msg_id, status, error, attempt,
+                 channel_msg_id, workflow_node,   -- DAG 来源节点 id（活动编排时标记）
+                 status, error, attempt,
                  created_at, updated_at)
 event           (id, tenant_id, customer_id, event_type, payload jsonb,
                  dedup_key, created_at)
@@ -533,5 +539,6 @@ ea-app         启动装配、网关过滤器、租户解析
 | v1.3 | 2026-09-04 | AB 实验设计定案（ADR-8，详细设计 3.5.1）：实验内嵌 campaign 三列 + SHA256 确定性分桶 + CONTROL=主配置；9.3 发送触达时序补「灰度 + AB 分桶」；12 阶段三标注 AB 已设计 |
 | v1.4 | 2026-09-04 | 登记技术栈设计文档（ea-agent-tech-stack.md v0.1，工程基线细化：版本选型 / 依赖 / 装配 / 配置 / 联调）；9.1 数据访问行与 7.2 强制条款措辞修正——多租户实现 = 复合 FK 跨租户拦截 + 应用层 TenantContext（不用租户插件重写 SQL，与 8.4 / ADR-1 一致） |
 | v1.5 | 2026-09-06 | 移除灰度与 AB 实验机制（对应详细设计 v1.7 / 数据流 v1.5 / 代码 V12 迁移）：ADR-8 删除（AB 内嵌 campaign + SHA256 确定性分桶），ADR 表收缩为 ADR-1~7；9.3 发送触达时序去「AB 确定性分桶」；12 演进阶段三去「AB 实验」并补「触发规则决策」；Campaign 关键属性与文档措辞对齐 V12 表结构 |
+| v1.6 | 2026-09-06 | 多通道编排 + 会话门控（代码 V13）：4.2 动力层补 DAG 编排（campaign.workflow jsonb / WorkflowExecutor / EventConsumer 拓扑序执行）；4.3 Action 表补 createTemplate（产品即 APPROVED，审核由会话门控承担）；5.4 补会话级门控实现细节（mode 键 / 待批 List / 审批 API）；6.2 补 /api/agent/approvals；8.2 DDL campaign.workflow 与 delivery.workflow_node；头部版本更新为 v1.6 |
 
 > 一句话总结：**Ontology 底座提供结构化、带状态、实时的业务世界模型与安全 Action 边界；AI-Agent 在其上规划、推理、反思、执行 —— 让 AI 从「建议者」变为「执行者」，完成从数据、洞察到决策、行动的闭环。**

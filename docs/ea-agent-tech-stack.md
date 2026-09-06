@@ -1,7 +1,7 @@
 # EA-Agent 技术栈设计（技术选型与工程基线）
 
-> 版本：v0.1 · 类型：技术栈设计文档 · 状态：设计草案
-> 对应：总体架构 v1.4（9.1 技术选型 / 9.2 代码模块划分）· 详细设计 v1.6（1.3 全局设计约定 / 3.5 EA-Bus / 10 关键流程）· 数据流 v1.4
+> 版本：v0.2 · 类型：技术栈设计文档 · 状态：设计草案
+> 对应：总体架构 v1.4（9.1 技术选型 / 9.2 代码模块划分）· 详细设计 v1.6（1.3 全局设计约定 / 3.5 EA-Bus / 10 关键流程）· 数据流 v1.6
 
 ## 1. 定位与范围
 
@@ -88,19 +88,22 @@ ea-web/src
 | `ea:mfa:{userId}` | STRING | 挑战 TTL | MFA 挑战（9.1） |
 | `ea:events` / `ea:events:dlq` | Stream | 无常驻 | EA-Bus 事件队列（3.5） |
 | `AgentSession:{sessionId}` | STRING | 24h | Agent 会话（7.2） |
+| `ea:agent:mode:{tenant}:{session}` | STRING | 1d | 会话模式 auto/suggest（web chat 写，缺省 auto） |
+| `ea:agent:approval:pending` | List | 决策后保留 | 建议模式挂起写动作（JSON entry） |
 
 - EA-Bus 消费：`StreamMessageListenerContainer` 手动 ACK（XACK），处理失败 `XADD ea:events:dlq` + 告警；消费组 `ea:consumer`（数据流 3.3）。
 
 **4.4 PostgreSQL**
 
-- 复合 FK 纵深 + CHECK（`chk_audience_mode`）按 8.1 DDL 建表；schema 脚本来源于 8.1，可接 Flyway 版本化（基线不强制）。
+- 复合 FK 纵深 + CHECK（`chk_audience_mode`）按 8.1 DDL 建表；schema 脚本来源于 8.1，可接 Flyway 版本化（基线不强制）。**Flyway 已启用**：`V13__campaign_workflow.sql` 提供 `campaign.workflow jsonb` + `delivery.workflow_node varchar(64)`（启动自动迁移）。
 - `delivery` 按月 RANGE 分区预建（调度任务每月 25 日预建下月分区，8.3）；`event` 默认 90 天归档到 `event_archive`（8.3）。
 
 **4.5 agentscope-java-2.0**
 
 - 初始化：`AgentScope.init`（模型配置：OpenAI 兼容网关，环境变量 `MODEL_API_KEY / MODEL_BASE_URL / MODEL_NAME`，默认 DashScope 兼容端点；模型接入点抽象在 `ea-agent`，可切 Ollama 本地验证）。
 - 工具注册：`@Tool` 注册到 AgentRunner——**真实执行工具仅 `applyAction`**（ActionRegistry 委托，3.3/ADR-3）；决策咨询函数经 `FunctionRegistry` 注册、`callFunction` 单工具路由（audienceStats / frequencyCheck / channelPreference / churnRiskScore / bestSendTime，只读咨询，与 ActionRegistry 对称）。
-- 权限模式：建议模式 = require approval（高危动作转人工，4.4）；自动模式 = allow（限定工具范围）。
+- 权限模式：建议模式 = require approval（高危动作转人工，4.4）；自动模式 = allow（限定工具范围）。**会话门控（代码 V13）**：`AgentToolRegistry` 增 `forTenant(tenantId,userId,role,sessionId)`，suggest 且写动作 → `applyAction` 挂起 Redis List `ea:agent:approval:pending`（LinkHashMap 稳定键序 JSON）返回 PENDING_APPROVAL；`ApprovalService.decide` 批准以原请求身份执行，LREM 精确串匹配原位更新；权限 `Roles.ROLE_LEVEL ≥ REVIEWER`，越权 E-10003。
+- 写动作工具集（V13）：`createTemplate`（模板直建，产物 APPROVED）→ `createCampaign`（requiredArgs=name/audience_id；顶层 channel/template_id 缺省取 workflow 首节点；workflow 经 `WorkflowCodec.validate`）；`WorkflowExecutor` + `WorkflowConditionEvaluator`（event/customer/prev 三组条件）驱动 `campaign.workflow` 逐客户执行，`EventConsumer` 判 workflow 非空分流。
 - 会话事件：31 类 Agent 会话事件（thinking/tool_call/approval_required/text_delta/done…）经 `SseEmitter` 流式回传（3.5/7.4）。
 - 会话与记忆：`AgentSession` 存 Redis（7.2）；`agent_run` 落库（plan/decisions/tokens_used，10.2）。
 

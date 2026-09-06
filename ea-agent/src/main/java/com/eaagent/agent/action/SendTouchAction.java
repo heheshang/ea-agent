@@ -92,46 +92,20 @@ public class SendTouchAction extends AbstractAction {
         Map<Long, TemplateEntity> tplCache = new HashMap<>();
         // 人群来源 = 活动快照（创建/换人群时固化；存量活动首次发送惰性回填），绝不实时重算
         List<Long> memberIds = snapshotService.memberIds(tenantId, campaign);
-        ChannelAdapter adapter = channelRegistry.get(campaign.getChannel());
-        adapter.validate(tenantId, Map.of());
-
         List<CustomerEntity> customers = memberIds.isEmpty() ? List.of()
                 : customerMapper.selectList(new QueryWrapper<CustomerEntity>()
                         .eq(CustomerEntity.COL_TENANT_ID, tenantId).in(CustomerEntity.COL_ID, memberIds));
         int sent = 0, unsubscribed = 0, failed = 0;
         for (CustomerEntity c : customers) {
-            // 1. 退订检查
-            if (isUnsubscribed(tenantId, c, campaign.getChannel())) {
+            DeliveryEntity d = sendOneCustomer(tenantId, campaign, c, campaign.getChannel(), null,
+                    null, eventType, eventPayload, tplCache);
+            if (d == null) {
                 unsubscribed++;
-                continue;
-            }
-            // 2. delivery 落库（request_id 幂等）
-            TemplateEntity tpl = templateRoutingService.resolve(campaign, eventType, eventPayload, c, tplCache);
-            DeliveryEntity d = new DeliveryEntity();
-            d.setRequestId(UUID.randomUUID().toString());
-            d.setTenantId(tenantId);
-            d.setCampaignId(campaign.getId());
-            d.setCustomerId(c.getId());
-            d.setChannel(campaign.getChannel());
-            d.setTemplateId(tpl.getId());
-            d.setStatus(DeliveryEntity.STATUS_PENDING);
-            d.setAttempt(0);
-            d.setCreatedAt(Instant.now());
-            d.setUpdatedAt(Instant.now());
-            deliveryMapper.insert(d);
-            // 3. 通道发送（console 降级：回写 SENT）
-            String to = pickContact(c, campaign.getChannel());
-            String content = render(tpl.getContent(), tpl.getVars(), c, eventPayload);
-            try {
-                adapter.send(new DeliveryMessage(d.getId(), tenantId, c.getId(), campaign.getChannel(),
-                        to, content));
+            } else if (DeliveryEntity.STATUS_SENT.equals(d.getStatus())
+                    || DeliveryEntity.STATUS_DELIVERED.equals(d.getStatus())) {
                 sent++;
-            } catch (Exception e) {
+            } else {
                 failed++;
-                d.setStatus(DeliveryEntity.STATUS_FAILED);
-                d.setError(String.valueOf(e.getMessage()).substring(0, Math.min(200, String.valueOf(e.getMessage()).length())));
-                d.setUpdatedAt(Instant.now());
-                deliveryMapper.updateById(d);
             }
         }
 
@@ -142,6 +116,96 @@ public class SendTouchAction extends AbstractAction {
         out.put("skipped_unsubscribed", unsubscribed);
         out.put("failed", failed);
         return out;
+    }
+
+    /**
+     * 单客户发送（普通活动与多通道编排 DAG 共用）：
+     * - workflowNode 非空 → DAG 节点发送：按节点 channel 取适配器、按 template_id 直定模板，且模板必须
+     *   APPROVED（模板未审核不可发，E-13002）；跳过 templateRouting。
+     * - 否则按活动通道 + templateRouting 解析（原发送管线）。
+     * delivery 落库（request_id 幂等；DAG 标记 workflow_node）→ 通道发送：成功由适配器回写 SENT；
+     * 异常置 FAILED（error 截断 200）后返回。退订跳过不落库，返回 null。
+     */
+    public DeliveryEntity sendOneCustomer(Long tenantId, CampaignEntity campaign, CustomerEntity c,
+                                          String channel, Long templateId, String workflowNode,
+                                          String eventType, Map<String, Object> eventPayload,
+                                          Map<Long, TemplateEntity> tplCache) {
+        // 1. 退订检查
+        if (isUnsubscribed(tenantId, c, channel)) {
+            return null;
+        }
+        ChannelAdapter adapter = channelRegistry.get(channel);
+        adapter.validate(tenantId, Map.of());
+        // 2. 模板解析：DAG 节点直定模板（须 APPROVED）；普通活动走路由
+        TemplateEntity tpl = resolveTemplate(tenantId, campaign, channel, templateId, workflowNode,
+                eventType, eventPayload, c, tplCache);
+        // 3. delivery 落库（request_id 幂等）
+        DeliveryEntity d = new DeliveryEntity();
+        d.setRequestId(UUID.randomUUID().toString());
+        d.setTenantId(tenantId);
+        d.setCampaignId(campaign.getId());
+        d.setCustomerId(c.getId());
+        d.setChannel(channel);
+        d.setTemplateId(tpl.getId());
+        d.setStatus(DeliveryEntity.STATUS_PENDING);
+        d.setAttempt(0);
+        d.setWorkflowNode(workflowNode);
+        d.setCreatedAt(Instant.now());
+        d.setUpdatedAt(Instant.now());
+        deliveryMapper.insert(d);
+        // 4. 通道发送（console 降级：回写 SENT）
+        String to = pickContact(c, channel);
+        String content = render(tpl.getContent(), tpl.getVars(), c, eventPayload);
+        try {
+            adapter.send(new DeliveryMessage(d.getId(), tenantId, c.getId(), channel, to, content));
+            // 适配器同步回写 DB（SENT/msg_id）；重查以让内存状态与库一致（DAG 前驱判定依赖真实状态）
+            DeliveryEntity fresh = deliveryMapper.selectById(d.getId());
+            if (fresh != null) {
+                d = fresh;
+            }
+        } catch (Exception e) {
+            d.setStatus(DeliveryEntity.STATUS_FAILED);
+            d.setError(String.valueOf(e.getMessage()).substring(0, Math.min(200, String.valueOf(e.getMessage()).length())));
+            d.setUpdatedAt(Instant.now());
+            deliveryMapper.updateById(d);
+        }
+        return d;
+    }
+
+    private TemplateEntity resolveTemplate(Long tenantId, CampaignEntity campaign, String channel,
+                                           Long templateId, String workflowNode, String eventType,
+                                           Map<String, Object> eventPayload, CustomerEntity c,
+                                           Map<Long, TemplateEntity> tplCache) {
+        if (workflowNode != null) {
+            Long tplId = templateId != null ? templateId
+                    : campaign.getTemplateId() != null ? campaign.getTemplateId()
+                            : campaign.getWorkflow() != null && !campaign.getWorkflow().isEmpty()
+                                    ? toLong(campaign.getWorkflow().get(0).get("template_id")) : null;
+            if (tplId == null) {
+                throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
+                        "DAG 节点 " + workflowNode + " 缺少 template_id");
+            }
+            if (tplCache.containsKey(tplId)) {
+                return tplCache.get(tplId);
+            }
+            TemplateEntity t = templateMapper.selectOne(new QueryWrapper<TemplateEntity>()
+                    .eq(TemplateEntity.COL_TENANT_ID, tenantId)
+                    .eq(TemplateEntity.COL_ID, tplId));
+            if (t == null) {
+                throw new BizException(ErrorCode.OBJECT_NOT_FOUND, "DAG 节点模板不存在: " + tplId);
+            }
+            if (!TemplateEntity.REVIEW_APPROVED.equals(t.getReviewStatus())) {
+                throw new BizException(ErrorCode.ACTION_VALIDATION_FAILED,
+                        "DAG 节点模板未审核（可能未通过人工审核）: " + tplId);
+            }
+            tplCache.put(tplId, t);
+            return t;
+        }
+        return templateRoutingService.resolve(campaign, eventType, eventPayload, c, tplCache);
+    }
+
+    private static Long toLong(Object o) {
+        return o instanceof Number n ? n.longValue() : Long.valueOf(String.valueOf(o));
     }
 
     private boolean isUnsubscribed(Long tenantId, CustomerEntity c, String channel) {

@@ -62,6 +62,11 @@ async function loadDeliveries(page: number) {
   }
 }
 
+/** 编排徽标判定：workflow 非空数组才算 DAG 活动。 */
+function hasWorkflow(row: Row): boolean {
+  return Array.isArray(row.workflow) && (row.workflow as unknown[]).length > 0
+}
+
 function fmtTime(v?: unknown): string {
   return v == null ? '-' : String(v)
 }
@@ -88,6 +93,7 @@ const emptyForm = () => ({
   schedule: null as Date | null,
   cron: '',
   template_routing_text: '',
+  workflow_text: '',
   event_type: '',
   window: '',
 })
@@ -140,6 +146,7 @@ function openEdit(row: Row) {
     schedule: row.schedule ? new Date(row.schedule as string) : null,
     cron: String(row.cron ?? ''),
     template_routing_text: row.template_routing ? JSON.stringify(row.template_routing, null, 2) : '',
+    workflow_text: row.workflow && Array.isArray(row.workflow) ? JSON.stringify(row.workflow, null, 2) : '',
     event_type: String(rule.event_type ?? ''),
     window: rule.window == null ? '' : String(rule.window),
   })
@@ -177,6 +184,21 @@ async function save() {
       return
     }
   }
+  // 多通道编排 DAG：JSON 数组（节点 {id,channel,template_id,condition?,next?}）；留空=保留现有，填 [] 清空
+  let workflow: Row[] | null = null
+  const workflowText = String(form.workflow_text ?? '').trim()
+  if (workflowText !== '') {
+    try {
+      const parsed: unknown = JSON.parse(workflowText)
+      if (!Array.isArray(parsed)) {
+        throw new Error('需为 JSON 数组')
+      }
+      workflow = parsed as Row[]
+    } catch (e) {
+      ElMessage.error(`编排 DAG JSON 解析失败：${(e as Error).message}`)
+      return
+    }
+  }
   // 触发规则仅回传非空键，避免误清原值（后端按键合并、缺失保留）
   const rule: Row = {}
   if (form.event_type.trim()) rule.event_type = form.event_type.trim()
@@ -189,6 +211,7 @@ async function save() {
     schedule: form.schedule ? new Date(form.schedule).toISOString() : null,
     cron: form.cron.trim() || null,
     templateRouting: templateRouting,
+    workflow: workflow,
     triggerRule: rule,
   }
   saving.value = true
@@ -255,6 +278,12 @@ onMounted(load)
           <span>{{ fmtAudienceSnapshot(row.audience_snapshot) }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="编排" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="hasWorkflow(row)" size="small" type="warning">DAG · {{ (row.workflow as unknown[]).length }}</el-tag>
+          <span v-else style="color: #c0c4cc">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="370" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="trigger(row)">触发</el-button>
@@ -272,7 +301,7 @@ onMounted(load)
           <el-card v-for="row in byStatus[s] ?? []" :key="row.id" shadow="hover" class="board-card">
             <div class="board-card-title" @click="openEdit(row)">{{ row.name }}</div>
             <div class="board-card-meta">
-              <div>通道：{{ channelLabel(row.channel) }}</div>
+              <div>通道：{{ channelLabel(row.channel) }}<el-tag v-if="hasWorkflow(row)" size="small" type="warning" style="margin-left: 6px">DAG · {{ (row.workflow as unknown[]).length }}</el-tag></div>
               <div>人群：{{ fmtAudienceSnapshot(row.audience_snapshot) }}</div>
               <div class="rule">规则：{{ JSON.stringify(row.trigger_rule ?? {}) }}</div>
             </div>
@@ -312,6 +341,9 @@ onMounted(load)
         <el-table v-loading="deliveryLoading" :data="deliveryRows" size="small" stripe>
           <el-table-column prop="id" label="投递 ID" width="90" />
           <el-table-column prop="customer_id" label="客户 ID" width="90" />
+          <el-table-column prop="workflow_node" label="节点" width="90">
+            <template #default="{ row }">{{ row.workflow_node ?? '-' }}</template>
+          </el-table-column>
           <el-table-column prop="channel" label="通道" width="80" />
           <el-table-column prop="status" label="状态" width="100" />
           <el-table-column prop="attempt" label="尝试" width="70" />
@@ -371,6 +403,10 @@ onMounted(load)
       <el-form-item label="模板路由">
         <el-input v-model="form.template_routing_text" type="textarea" :rows="5"
                   placeholder='[{"event_type":"order_placed","conditions":[{"attr":"new_customer","op":"eq","value":true}],"template_id":2}] — 顺序匹配首条命中，未命中回退主模板；留空=保留现有，填 [] 清空' />
+      </el-form-item>
+      <el-form-item label="编排 DAG">
+        <el-input v-model="form.workflow_text" type="textarea" :rows="7"
+                  placeholder='[{"id":"n1","channel":"sms","template_id":2,"next":["n2"]},{"id":"n2","channel":"wechat","template_id":3,"condition":{"prev":{"n1":{"op":"eq","value":"SENT"}}}}] — 事件驱动逐节点推进（linear 单链即可）；节点字段：id 唯一、channel、template_id、condition（分组 event/customer/prev）、next（下一节点 id 数组）；留空=保留现有，填 [] 清空' />
       </el-form-item>
       <el-form-item label="触发规则">
         <div style="display: flex; flex-direction: column; gap: 8px; width: 100%">
