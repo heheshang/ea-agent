@@ -22,7 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 活动（campaign）：查询走统一对象 API，投递日志/AB 聚合经 CampaignDeliveryService；
+ * 活动（campaign）：查询走统一对象 API，投递日志经 CampaignDeliveryService；
  * 写操作经 Action 框架（createCampaign / updateCampaign / pauseCampaign / sendTouch，
  * 权限矩阵见详细设计 9.2）。Controller 不直调 mapper。
  */
@@ -65,10 +65,6 @@ public class CampaignController {
         args.put("template_id", req.getTemplateId());
         args.put("schedule", req.getSchedule() == null ? null : req.getSchedule().toString());
         args.put("cron", req.getCron());
-        args.put("gray_ratio", req.getGrayRatio());
-        args.put("ab_mode", req.getAbMode());
-        args.put("ab_split", req.getAbSplit());
-        args.put("ab_variants", req.getAbVariants());
         args.put("template_routing", req.getTemplateRouting());
         args.put("trigger_rule", req.getTriggerRule());
         return Result.ok(actionRegistry.get("createCampaign").execute(ctx, ActionRequest.of(args)).data());
@@ -86,10 +82,6 @@ public class CampaignController {
         args.put("template_id", req.getTemplateId());
         args.put("schedule", req.getSchedule() == null ? null : req.getSchedule().toString());
         args.put("cron", req.getCron());
-        args.put("gray_ratio", req.getGrayRatio());
-        args.put("ab_mode", req.getAbMode());
-        args.put("ab_split", req.getAbSplit());
-        args.put("ab_variants", req.getAbVariants());
         args.put("template_routing", req.getTemplateRouting());
         args.put("trigger_rule", req.getTriggerRule());
         return Result.ok(actionRegistry.get("updateCampaign").execute(ctx, ActionRequest.of(args)).data());
@@ -105,11 +97,6 @@ public class CampaignController {
     public Result<Map<String, Object>> trigger(@PathVariable Long id) {
         return Result.ok(actionRegistry.get("sendTouch")
                 .execute(actionCtx("trigger:" + id + ":" + java.util.UUID.randomUUID()), ActionRequest.of(Map.of("campaign_id", id))).data());
-    }
-
-    @GetMapping("/{id}/ab-report")
-    public Result<Map<String, Object>> abReport(@PathVariable Long id) {
-        return Result.ok(deliveryService.abReport(TenantContext.requiredTenantId(), id));
     }
 
     /**

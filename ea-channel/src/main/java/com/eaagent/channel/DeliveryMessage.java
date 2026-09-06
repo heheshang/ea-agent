@@ -9,6 +9,5 @@ public record DeliveryMessage(
         Long customerId,
         String channel,
         String to,             // phone / email / openid
-        String templateContent,
-        String abGroup) {
+        String templateContent) {
 }

@@ -39,7 +39,7 @@ import java.util.Map;
 /**
  * 演示数据（ea.seed.enabled，幂等：已存在 demo 租户则跳过）：
  * demo 租户 + 双角色用户（BCrypt 运行时生成）+ DYNAMIC 人群 + 已审核模板 + RUNNING 活动
- * （触发规则 event_type=order_placed, cooldown=PT1H）+ 3 客户 + console 通道 + 一条退订。
+ * （触发规则 event_type=order_placed, window=1d）+ 3 客户 + console 通道 + 一条退订。
  */
 @Component
 public class SeedDataInitializer implements ApplicationRunner {
@@ -239,9 +239,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         c.setAudienceSnapshot(snapshotService.build(tenantId, audienceId));
         c.setChannel("console");
         c.setTemplateId(templateId);
-        c.setGrayRatio(100);
-        c.setAbMode(CampaignEntity.AB_MODE_NONE);
-        c.setTriggerRule(Map.of("event_type", "order_placed", "window", "1d", "cooldown", "PT1H"));
+        c.setTriggerRule(Map.of("event_type", "order_placed", "window", "1d"));
         c.setStatus(CampaignEntity.STATUS_RUNNING);
         c.setOwnerId(adminId);
         c.setCreatedAt(Instant.now());
@@ -279,7 +277,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         unsubscribeMapper.insert(u);
     }
 
-    /** 演示知识库条目（与系统真实行为一致：退订/冷却窗/灰度；幂等，该租户已有条目则跳过）。 */
+    /** 演示知识库条目（与系统真实行为一致：退订/频控；幂等，该租户已有条目则跳过）。 */
     private void seedKnowledge(Long tenantId) {
         Long exists = knowledgeMapper.selectCount(new QueryWrapper<KnowledgeEntity>()
                 .eq(KnowledgeEntity.COL_TENANT_ID, tenantId));
@@ -291,12 +289,9 @@ public class SeedDataInitializer implements ApplicationRunner {
                 {"触达退订规范", "触达前必须核对客户退订状态（unsubscribe 表）：已退订客户禁止任何渠道触达；"
                         + "客户在任一渠道退订即视为全局退订，其他渠道也不得再触达。违规触达会直接发失败。",
                         List.of("退订", "触达", "合规")},
-                {"冷却窗与频控", "同一客户在活动触发规则的冷却窗口（trigger_rule.cooldown，ISO-8601 时长）内不得重复触达，"
-                        + "频道级频控按每天上限（频道配置 max_per_day）限制；临近冷却窗末的触达需重新评估最近一次触达时间。",
-                        List.of("冷却", "频控", "触发规则")},
-                {"灰度发布", "活动支持灰度发布：gray_ratio 表示放量百分比（1-99 部分灰度，100 全量）；"
-                        + "按客户 ID 做 SHA256 确定性分桶，同一客户在灰度与全量切换期间结果一致。AB 模式（ab_mode=AB）下按 ab_split 比例分两组对照。",
-                        List.of("灰度", "AB", "发布")},
+                {"频道频控", "频道级频控按每天上限（频道配置 max_per_day）限制同一客户在该频道的触达次数；"
+                        + "触达前可调用 frequencyCheck 查询客户历史发送总量。",
+                        List.of("频控", "触发规则")},
         };
         for (Object[] row : rows) {
             KnowledgeEntity k = new KnowledgeEntity();

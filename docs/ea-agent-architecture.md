@@ -105,11 +105,10 @@
 | ADR-1 | 多租户默认共享库 + 行级隔离（tenant_id） | SaaS 成本最低、运维最简单 | 大租户可升级 schema/独立库（数据按 tenant_id 迁移） |
 | ADR-2 | 事件驱动 + 异步触达（Redis 队列） | 触达执行解耦、抗峰值 | 增加最终一致性处理（幂等 + 回执补偿） |
 | ADR-3 | AI 不直连数据：唯一入口 = 对象 API + Action | 权限闸门统一、LLM 无法越权 | Action 开发成本高于裸 SQL |
-| ADR-4 | Agent 权限 = 发起用户权限下放，高危转人工 | 最小权限、可审计 | 建议模式降低自动化率（可灰度放开） |
+| ADR-4 | Agent 权限 = 发起用户权限下放，高危转人工 | 最小权限、可审计 | 建议模式降低自动化率（可分阶段放开） |
 | ADR-5 | 工具统一经 MCP 协议接入 | 通道/数据源解耦，生态复用 | 协议适配层开销 |
 | ADR-6 | 租户上下文服务端注入，LLM 不可提供 | LLM 输出不可信，防跨租户越权 | 工具实现必须感知租户上下文 |
 | ADR-7 | Agent 输出 SSE 流式（对接 31 类 Agent 会话事件） | 实时渲染、人在环审批体验 | 需前后端事件协议约定 |
-| ADR-8 | AB 实验内嵌 campaign（ab_mode/ab_split/ab_variants 三列，不建实验表）+ SHA256 确定性分桶，CONTROL = 主配置 | 与灰度同层：实验是任务编排属性而非独立实体，无新增表/Redis key；分桶可重现（重试/复盘组稳定），单变量归因可解释 | 变体仅限策略差异（channel/template/frequency_limit/gray_ratio），人群与触发固定主 campaign——多变量同改不可归因（3.5.1） |
 
 ---
 
@@ -125,7 +124,7 @@
 |---|---|---|---|
 | Customer 客户 | 业务实体 · 触达基本单元 | 手机、邮箱、微信 openid、标签、画像 jsonb | ∈ Audience |
 | Audience 人群 | 派生集合：客户分组 | **模式 DYNAMIC（规则派生）/ STATIC（成员表）**、规则、成员数量、状态 | Customer ∈ Audience（派生链接） |
-| Campaign 触达任务 | 一次有目标的触达活动 | 目标人群、渠道、模板、时间、灰度、状态 | → Audience / Channel / Template |
+| Campaign 触达任务 | 一次有目标的触达活动 | 目标人群、渠道、模板、时间、状态 | → Audience / Channel / Template |
 | Template 模板 | 各渠道触达内容 | 渠道、标题/正文/变量、审核状态 | → Channel |
 | Channel 通道 | 触达通道 | 类型、凭据引用、启用状态、频控配置 | → 凭据 |
 | Delivery 触达记录 | 每次触达执行结果 | 客户、任务、渠道、消息 ID、状态、回执、重试 | → Customer / Campaign |
@@ -157,7 +156,7 @@
 | Action | 入参 | 内置校验 | 副作用 |
 |---|---|---|---|
 | sendTouch | customer / channel / template / 请求ID | 权限、频控、退订、时段、地址完备 | 异步触达 → Delivery |
-| createCampaign | 人群 / 渠道 / 模板 / 时间 / 灰度 | 权限、模板审核状态 | 新建任务 |
+| createCampaign | 人群 / 渠道 / 模板 / 时间 | 权限、模板审核状态 | 新建任务 |
 | pauseCampaign | campaign | 权限 | 暂停任务 |
 | updateCustomerState | customer / 状态 | 权限 | 更新画像状态 |
 | importEvents | events[] | 权限、幂等去重 | 入业务事件总线（EA-Bus） |
@@ -238,10 +237,10 @@ new → planning → awaiting_approval ──审批通过──→ executing →
 ### 5.4 人机协同与权限门控
 
 - **建议模式（默认）**：Agent 出方案与话术，人工确认后执行 —— 决策透明、可审计
-- **自动模式（显式授权）**：仅在灰度范围内自动执行；超阈值/高危动作强制转人工
+- **自动模式（显式授权）**：授权范围内自动执行；超阈值/高危动作强制转人工
 - **审计**：`agent_run` 记录目标、规划、决策理由与每次 Action 调用，全程可回放
 
-平台支撑：AgentScope Java 2.0 原生**工具权限系统**（allow / require approval / deny）与 31 类 Agent 会话事件流（实时前端渲染 + 人在环）[6] —— 映射关系：建议模式 = require approval；自动模式 = allow（限定工具+灰度）。对照 Palantir AIP Chatbot Studio（原 Agent Studio）：LLM + Ontology + 文档 + 自定义工具，平台只授予任务所需最小权限 [7]。
+平台支撑：AgentScope Java 2.0 原生**工具权限系统**（allow / require approval / deny）与 31 类 Agent 会话事件流（实时前端渲染 + 人在环）[6] —— 映射关系：建议模式 = require approval；自动模式 = allow（限定工具）。对照 Palantir AIP Chatbot Studio（原 Agent Studio）：LLM + Ontology + 文档 + 自定义工具，平台只授予任务所需最小权限 [7]。
 
 ### 5.5 记忆与上下文管理
 
@@ -262,7 +261,7 @@ new → planning → awaiting_approval ──审批通过──→ executing →
 | 页面模块 | 能力 |
 |---|---|
 | 客户/人群管理 | 客户画像查看、人群规则筛选、成员预览 |
-| 触达任务编排 | 画布式配置：人群 × 渠道 × 模板 × 时间 × 灰度 |
+| 触达任务编排 | 画布式配置：人群 × 渠道 × 模板 × 时间 |
 | 通道配置 | 渠道凭据录入 / 启停 / 连通性测试（脱敏展示） |
 | 触达监控 | 实时发送量、到达率、回执状态、失败明细 |
 | Agent 对话工作台 | 对话 + 智能卡片，任务审批（建议模式入口） |
@@ -368,15 +367,15 @@ audience_member (tenant_id, audience_id, customer_id, created_at)
 
 campaign        (id, tenant_id, name, audience_id, audience_snapshot jsonb,
                  channel, template_id,
-                 schedule, gray_ratio, owner_id, status, ...)
+                 schedule, owner_id, status, ...)
 template        (id, tenant_id, channel, title, content, vars jsonb, status,
                  review_status)
 channel_config  (id, tenant_id, channel, config_encrypted, enabled,
                  frequency_limit jsonb)
 
 delivery        (id, tenant_id, campaign_id, customer_id, channel,
-                 channel_msg_id, gray_hit, status, error, attempt,
-                 created_at, updated_at)      -- gray_hit: 灰度抽样命中审计
+                 channel_msg_id, status, error, attempt,
+                 created_at, updated_at)
 event           (id, tenant_id, customer_id, event_type, payload jsonb,
                  dedup_key, created_at)
 
@@ -433,7 +432,7 @@ ea-app         启动装配、网关过滤器、租户解析
 
 ```
 外部系统 → 网关(租户解析) → 对象API → ActionService.sendTouch
-  → 校验管线(鉴权/幂等/频控/配额) → 异步队列(消费端：灰度抽样 + AB 确定性分桶，3.5.1) → 触达执行器
+  → 校验管线(鉴权/幂等/频控/配额) → 异步队列(消费端) → 触达执行器
   → 通道适配器 → 外部通道 → 回执回调 → Delivery 更新 → EA-Bus 事件(通知/复盘)
 ```
 
@@ -492,7 +491,7 @@ ea-app         启动装配、网关过滤器、租户解析
 |---|---|---|
 | 一：基础设施 | 对象模型 + 统一对象 API + 前端对象管理 + 租户隔离底座 | Ontology 底座可用（含多租户） |
 | 二：触达闭环 | 通道接入（email/sms/wechat）、任务编排、业务事件 + 异步队列、触达监控 | 多通道自动化触达跑通 |
-| 三：规则决策 | 人群条件筛选、灰度/AB（灰度已定案；AB 已设计：详细设计 3.5.1 + 8.1 DDL）、频控与合规 | 规则驱动决策上线 |
+| 三：规则决策 | 人群条件筛选、触发规则决策、频控与合规 | 规则驱动决策上线 |
 | 四：AI 决策 | agentscope 六模块接入、OAG 工具集、人机协同（建议/自动）、agent_run 审计 | 从规则决策演进到 AI 决策 |
 | 五：SaaS 商业化 | 计量计费、租户升级通道（schema/独立库）、渠道扩增、Agent 团队编排 | 多租户商业化闭环 |
 
@@ -533,5 +532,6 @@ ea-app         启动装配、网关过滤器、租户解析
 | v1.2 | 2026-09-04 | 与详细设计 v1.4 对齐：5.2 工具机制收敛为单一 `applyAction`（委托 ActionRegistry，5 Action 由参数选择，同步 5.3 运行链路表述）；总体衔接详细设计缺口补齐（MFA 流程契约、主动退订端点、冷却窗 Redis 载体、agent_run token 计量、SSE 两段式）——细节以详细设计 9.1 / 9.5 / 3.5 / 10.2 / 7.4 为准 |
 | v1.3 | 2026-09-04 | AB 实验设计定案（ADR-8，详细设计 3.5.1）：实验内嵌 campaign 三列 + SHA256 确定性分桶 + CONTROL=主配置；9.3 发送触达时序补「灰度 + AB 分桶」；12 阶段三标注 AB 已设计 |
 | v1.4 | 2026-09-04 | 登记技术栈设计文档（ea-agent-tech-stack.md v0.1，工程基线细化：版本选型 / 依赖 / 装配 / 配置 / 联调）；9.1 数据访问行与 7.2 强制条款措辞修正——多租户实现 = 复合 FK 跨租户拦截 + 应用层 TenantContext（不用租户插件重写 SQL，与 8.4 / ADR-1 一致） |
+| v1.5 | 2026-09-06 | 移除灰度与 AB 实验机制（对应详细设计 v1.7 / 数据流 v1.5 / 代码 V12 迁移）：ADR-8 删除（AB 内嵌 campaign + SHA256 确定性分桶），ADR 表收缩为 ADR-1~7；9.3 发送触达时序去「AB 确定性分桶」；12 演进阶段三去「AB 实验」并补「触发规则决策」；Campaign 关键属性与文档措辞对齐 V12 表结构 |
 
 > 一句话总结：**Ontology 底座提供结构化、带状态、实时的业务世界模型与安全 Action 边界；AI-Agent 在其上规划、推理、反思、执行 —— 让 AI 从「建议者」变为「执行者」，完成从数据、洞察到决策、行动的闭环。**

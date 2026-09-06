@@ -94,7 +94,7 @@
 |---|---|---|---|
 | Customer 客户 | 触达基本单元 | 手机、邮箱、微信 openid、标签、活跃状态、画像 jsonb | ∈ Audience |
 | Audience 人群 | 派生集合 | 模式 DYNAMIC（规则实时派生）/ STATIC（成员表），二选一、规则、成员数量、状态 | Customer ∈ Audience（DYNAMIC 派生链接 / STATIC 成员表） |
-| Campaign 触达任务 | 一次有目标的触达活动 | 目标人群、渠道、模板、时间、灰度比例、状态 | → Audience / Channel / Template |
+| Campaign 触达任务 | 一次有目标的触达活动 | 目标人群、渠道、模板、时间、状态 | → Audience / Channel / Template |
 | Template 模板 | 各渠道触达内容 | 渠道、标题/正文/变量、审核状态 | → Channel |
 | Channel 通道 | 触达通道 | 类型、凭据引用、启用状态、频控配置 | → 凭据 |
 | Delivery 触达记录 | 每次触达执行结果 | 客户、任务、渠道、消息 ID、状态、回执、重试次数 | → Customer / Campaign |
@@ -126,7 +126,7 @@
 | Action | 入参 | 内置校验 | 副作用 |
 |---|---|---|---|
 | sendTouch | customer / channel / template / 请求ID | 权限、频控、退订、时段、地址完备 | 异步触达 → Delivery |
-| createCampaign | 人群 / 渠道 / 模板 / 时间 / 灰度 | 权限、模板审核状态 | 新建任务 |
+| createCampaign | 人群 / 渠道 / 模板 / 时间 / 触发规则 | 权限、模板审核状态 | 新建任务 |
 | pauseCampaign | campaign | 权限 | 暂停任务 |
 | updateCustomerState | customer / 状态 | 权限 | 更新画像状态 |
 | importEvents | events[] | 权限、幂等去重 | 入业务事件总线（EA-Bus） |
@@ -211,10 +211,10 @@ output(FinalAnswer, TaskResult)
 ### 4.5 人机协同与信任边界
 
 - **建议模式（默认）**：Agent 出方案与话术，人工确认后执行 —— 决策透明、可审计
-- **自动模式（显式授权）**：仅在灰度范围内自动执行；超阈值 / 高危动作（全量触达、删除）强制转人工
+- **自动模式（显式授权）**：仅在授权范围内自动执行；超阈值 / 高危动作（全量触达、删除）强制转人工
 - **审计**：agent_run 记录目标、规划、决策理由与每次 Action 调用，全程可回放
 
-> **平台支撑**：AgentScope Java 2.0 原生提供**工具调用权限系统**（allow / require user approval / deny）与 31 类 Agent 会话事件流（实时前端渲染 + 人机协同）[6]——即本系统的「Agent 会话事件」（与业务事件总线 EA-Bus 相互独立，见 3.3），可直接落地上述「建议模式 = require approval、自动模式 = allow（限定工具与灰度范围）」。对照 Palantir AIP Chatbot Studio（原 Agent Studio）：LLM + Ontology + 文档 + 自定义工具，平台安全模型只授予任务所需的最小权限 [7]。
+> **平台支撑**：AgentScope Java 2.0 原生提供**工具调用权限系统**（allow / require user approval / deny）与 31 类 Agent 会话事件流（实时前端渲染 + 人机协同）[6]——即本系统的「Agent 会话事件」（与业务事件总线 EA-Bus 相互独立，见 3.3），可直接落地上述「建议模式 = require approval、自动模式 = allow（限定工具范围）」。对照 Palantir AIP Chatbot Studio（原 Agent Studio）：LLM + Ontology + 文档 + 自定义工具，平台安全模型只授予任务所需的最小权限 [7]。
 
 ---
 
@@ -223,7 +223,7 @@ output(FinalAnswer, TaskResult)
 | 页面 | 能力 |
 |---|---|
 | 客户/人群管理 | 客户画像查看、人群规则筛选、成员预览 |
-| 触达任务编排 | 画布式配置：人群 × 渠道 × 模板 × 时间 × 灰度 |
+| 触达任务编排 | 画布式配置：人群 × 渠道 × 模板 × 时间 × 触发规则 |
 | 通道配置 | 各渠道凭据录入 / 启停 / 连通性测试（凭据脱敏展示） |
 | 触达监控 | 实时发送量、到达率、回执状态、失败明细 |
 | Agent 对话工作台 | 对话 + 智能卡片，任务审批（建议模式）入口 |
@@ -316,12 +316,11 @@ audience      (id, tenant_id, name, mode, rule, owner_id, status, created_at)
               -- mode: DYNAMIC|STATIC，rule 与成员互斥；owner_id: dynamic security 归属
 audience_member(audience_id, customer_id)   -- 仅 STATIC 人群
 campaign      (id, tenant_id, name, audience_id, channel, template_id,
-               schedule, gray_ratio, owner_id, status, ...)
+               schedule, owner_id, status, ...)
 template      (id, tenant_id, channel, title, content, vars, status)
 channel_config(id, tenant_id, channel, config_encrypted, enabled)
 delivery      (id, tenant_id, campaign_id, customer_id, channel, channel_msg_id,
-               gray_hit, status, error, attempt, created_at, updated_at)
-              -- gray_hit: 灰度抽样命中审计
+               status, error, attempt, created_at, updated_at)
 event         (id, tenant_id, customer_id, event_type, payload jsonb,
                dedup_key UNIQUE, created_at)
 agent_run     (id, tenant_id, goal, plan, decisions jsonb, status, created_at)   -- AI 审计
@@ -335,7 +334,7 @@ agent_run     (id, tenant_id, goal, plan, decisions jsonb, status, created_at)  
 |---|---|---|
 | 一：基础设施 | 对象模型 + 统一对象 API + 前端对象管理 + 租户隔离底座 | Ontology 底座可用（含多租户） |
 | 二：触达闭环 | 通道接入（email/sms/wechat）、任务编排、业务事件 + 异步队列、触达监控 | 多通道自动化触达跑通 |
-| 三：规则决策 | 人群条件筛选、灰度/AB、频控与合规 | 规则驱动决策上线 |
+| 三：规则决策 | 人群条件筛选、触发规则决策、频控与合规 | 规则驱动决策上线 |
 | 四：AI 决策 | agentscope 六模块接入、OAG 工具集、人机协同（建议/自动）、agent_run 审计 | 从规则决策演进到 AI 决策 |
 
 ---

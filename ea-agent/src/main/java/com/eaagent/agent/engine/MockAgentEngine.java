@@ -31,7 +31,7 @@ public class MockAgentEngine implements AgentEngine {
                         "steps", List.of(
                                 Map.of("name", "解析目标与权限", "desc", "识别目标人群与操作权限"),
                                 Map.of("name", "查询客户画像", "desc", "按活跃状态拉取候选人"),
-                                Map.of("name", "评估触达窗口", "desc", "核对冷却窗与灰度"),
+                                Map.of("name", "评估触达窗口", "desc", "核对退订与频控"),
                                 Map.of("name", "输出建议", "desc", "汇总触达方案"))))),
                 new EngineEvent("tool_call", JsonUtils.write(Map.of(
                         "tool", "queryCustomers",
@@ -44,7 +44,7 @@ public class MockAgentEngine implements AgentEngine {
                 new EngineEvent("text_delta", JsonUtils.write(Map.of(
                         "text", "已定位 2 位活跃客户。张伟近 30 天有 3 次下单，偏好晚八点触达；李娜偏好邮件渠道，近期无退订记录。"))),
                 new EngineEvent("text_delta", JsonUtils.write(Map.of(
-                        "text", "建议对张伟通过 console 通道推送复购提醒（冷却窗已过），李娜可推送本周活动摘要。"))));
+                        "text", "建议对张伟通过 console 通道推送复购提醒，李娜可推送本周活动摘要。"))));
         return Flux.fromIterable(steps).delayElements(Duration.ofMillis(200));
     }
 }

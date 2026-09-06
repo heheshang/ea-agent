@@ -229,10 +229,10 @@ public class AgentToolRegistry {
         }
     }
 
-    /** getCampaign：campaign 配置（含灰度/AB/触发规则）。 */
+    /** getCampaign：campaign 配置（触发规则）。 */
     class GetCampaign extends BaseTool {
         GetCampaign(Long tenantId, Long userId, String role) {
-            super(tenantId, userId, role, "getCampaign", "查询活动配置（灰度、AB、触发规则）",
+            super(tenantId, userId, role, "getCampaign", "查询活动配置（触发规则）",
                     schema(Map.of("campaign_id", pInt("活动 ID")), List.of("campaign_id")));
         }
 
@@ -384,7 +384,7 @@ public class AgentToolRegistry {
 
     /**
      * agent 创建智能运营活动（createCampaign）必须携带触发规则 trigger_rule（含 event_type，
-     * 可含 window/cooldown）；缺失/空白拒绝并返回可读指引，LLM 据此补充或向用户澄清触发条件。
+     * 可含 window）；缺失/空白拒绝并返回可读指引，LLM 据此补充或向用户澄清触发条件。
      * 其余动作放行（web 创建等非 agent 路径不经此校验）。
      */
     static String validateCreateCampaignRule(String action, Map<String, Object> args) {
@@ -403,7 +403,7 @@ public class AgentToolRegistry {
             ruleMap = null;
         }
         if (ruleMap == null || ruleMap.isEmpty()) {
-            return "创建活动必须附触发规则 trigger_rule（{\"event_type\":\"…\",\"window\":\"…\",\"cooldown\":\"…\"}）；用户未指定时先询问触发条件（事件类型、冷却窗），不得省略";
+            return "创建活动必须附触发规则 trigger_rule（{\"event_type\":\"…\",\"window\":\"…\"}）；用户未指定时先询问触发条件（事件类型、时间窗），不得省略";
         }
         Object eventType = ruleMap.get("event_type");
         if (eventType == null || String.valueOf(eventType).isBlank()) {

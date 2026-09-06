@@ -1,8 +1,8 @@
 # EA-Agent 全链路数据流程图
 
 > **EA-Agent · 多通道运营触达智能体（SaaS 多租户）**
-> 版本：v1.4 · 类型：流程设计文档 · 状态：设计定稿
-> 对应：详细设计 v1.6（3.5 事件流 / 3.5.1 AB 实验 / 3.6 调度 / 6 通道层 / 8 数据架构 / 9 安全 / 10 时序）· 总体架构 v1.4（3.1 分层 / 9.3 时序）· 技术栈设计 v0.1（工程基线）
+> 版本：v1.5 · 类型：流程设计文档 · 状态：设计定稿
+> 对应：详细设计 v1.7（3.5 事件流 / 3.6 调度 / 6 通道层 / 8 数据架构 / 9 安全 / 10 时序）· 总体架构 v1.5（3.1 分层 / 9.3 时序）· 技术栈设计 v0.1（工程基线）
 
 ## 1. 文档定位与图例
 
@@ -106,7 +106,7 @@ flowchart LR
   ES[(ea:events)] -->|"XREADGROUP ea:consumer"| C1["反序列化 校验"]
   C1 --> C2["TaskDecorator 重建租户上下文"]
   C2 --> C3["RuleEngine 匹配 campaign.trigger_rule"]
-  C3 -->|"启用 + RUNNING + 事件类型 + 冷却窗"| C4["命中 → sendTouch 任务维度去重"]
+  C3 -->|"启用 + RUNNING + 事件类型"| C4["命中 → sendTouch 任务维度去重"]
   C3 -->|"未命中"| X["XACK 丢弃"]
   C4 --> X
   C1 -. "消费重放 按 tenant_id,dedup_key 二次确认" .-> ES
@@ -116,7 +116,7 @@ flowchart LR
 要点：
 
 - 消费组 `ea:consumer`（3.5）：消息处理成功才 XACK；重放由消费端按 `(tenant_id, dedup_key)` 二次确认兜底（容错「成功但未 ACK」）。
-- 匹配条件来自 `campaign.trigger_rule` jsonb（8.4）：`{"event_type":"order_placed","window":"1d","cooldown":"1h"}`；冷却窗抑制同客户重复触发。
+- 匹配条件来自 `campaign.trigger_rule` jsonb（8.4）：`{"event_type":"order_placed","window":"1d"}`；window 为事件的匹配时间窗。
 - 死信：不可解析消息 → `ea:events:dlq` + 告警，人工/自动化处置（10.3 步骤 6）。
 
 ### 3.3 A-3 调度触发（周期任务入口）
@@ -141,8 +141,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   TOUCH["sendTouch Action"] -->|"校验管线"| VL["鉴权 RBAC / 租户11002 / 幂等request_id / 频控13004 / 退订13005 / 时段13007 / 模板审核 / 配额13006"]
-  VL -->|"灰度抽样 gray_hit"| G["campaign.gray_ratio"]
-  G -->|"写表 PENDING"| DEL[(delivery 表)]
+  VL -->|"写表 PENDING"| DEL[(delivery 表)]
   DEL -. "UNIQUE tenant_id,request_id 并发兜底" .-> VL
   DEL -->|"XADD 消息含 tenant_id"| TQ[("ea:touch:{tenant}")]
   TQ -->|"消费者 TaskDecorator 重建租户"| AD["ChannelAdapterRegistry.get channel"]
@@ -158,7 +157,6 @@ flowchart LR
 - **发送对象 = 人群快照**：`campaign.audience_snapshot`（jsonb，V10）在活动**创建/改绑人群时**由 `AudienceSnapshotService` 固化（`audience_id/audience_name/mode/rule/member_count/customer_ids/snapshot_at`）；`sendTouch` 只枚举快照成员、**不再对 `audience.rule` 实时重算**（防规则漂移导致全量误发；空快照=发 0 人）。存量无快照活动首次发送前惰性现算并回填 campaign 行。
 - **幂等双闸**：Redis `IdempotencyService`（SETNX `ea:idem:{tenant}:{requestId}`，2.2）先滤，`delivery UNIQUE (tenant_id, request_id)`（762 行）落库兜底并发；重复请求返回首次结果。
 - 业务校验在写库前完成（9.5）：频控计数 `ea:fc:{tenant}:{channel}:{customerId}:{date}`、退订查 `unsubscribe`（租户级 + 全局 customer_key 匹配，E-13005）、时段 `quiet_hours`（E-13007）——**避免无效 delivery 落库**。
-- 灰度（4.4）：随机抽样命中才写 `delivery.gray_hit = true`（E），审批判定「全量=100%」由 `chk_campaign_gray` CHECK（713 行）保证合法区间。
 - 明文边界：`channel_config.config_encrypted` / `callback_secret` 均为信封密文（9.3），发送前解密，明文仅存在于服务端调用栈（6.2）。
 - 熔断：通道连续失败率超阈值 → `ea:cb:{channel}` 熔断 60s（6.4）；未配置真实通道 → ConsoleChannelAdapter 降级联调。
 
@@ -244,7 +242,7 @@ flowchart LR
   AU -->|"DYNAMIC 成员 = RuleEngine 实时派生 不落成员表"| RE["RuleEngine 查询"]
   AM -. "UNIQUE tenant_id,audience_id,customer_id" .-> AU
   TP -. "UNIQUE tenant_id,id 供 campaign/delivery 复合 FK" .-> AV
-  CP -. "UNIQUE tenant_id,id + chk_campaign_gray" .-> AV
+  CP -. "UNIQUE tenant_id,id" .-> AV
   CC -. "UNIQUE tenant_id,channel" .-> AV
   AU -->|"被消费 链路 A 人群"| A4["链路 A"]
   TP -->|"被消费 模板渲染"| A4
@@ -270,10 +268,10 @@ flowchart LR
 | customer | 客户导入/对象 API | 触达选人、事件关联、Agent 查询 | UNIQUE `(tenant_id,external_id)` (666) + `(tenant_id,id)` (667) | 常驻 |
 | audience | 人群创建（链路 C） | 触达选人、审批展示 | owner FK (676)、UNIQUE `(tenant_id,id)` (679)、chk_audience_mode (680) | 常驻 |
 | audience_member | STATIC 人群成员导入 | 人群成员反查 | 复合 FK ×2 (689-690)、UNIQUE `(tenant_id,audience_id,customer_id)` (692) | 常驻 |
-| campaign | 任务编排（链路 C） | 调度器、事件匹配、审批、AB 分桶 | 复合 FK ×2 (699,701)、owner FK (708)、chk_campaign_gray (713)、chk_campaign_ab (714)、UNIQUE `(tenant_id,id)` (718)；ab_mode/ab_split/ab_variants (705-707) | 常驻 |
+| campaign | 任务编排（链路 C） | 调度器、事件匹配、审批 | 复合 FK ×2 (699,701)、owner FK (708)、UNIQUE `(tenant_id,id)` (718) | 常驻 |
 | template | 模板管理（链路 C） | 触达渲染、审批 | UNIQUE `(tenant_id,id)` (730) | 常驻 |
 | channel_config | 通道配置（链路 C） | 发送解密、回执验签 | `callback_secret` 密文 (740)、UNIQUE `(tenant_id,channel)` (742) | 常驻 |
-| delivery | A-4 发送、A-5 回调 | 监控、复盘、重试、ab-report 聚合 | UNIQUE `(tenant_id,request_id)` (762) + `(tenant_id,channel_msg_id)` (763)；ab_group (755) | 按月分区，旧分区归档 |
+| delivery | A-4 发送、A-5 回调 | 监控、复盘、重试 | UNIQUE `(tenant_id,request_id)` (762) + `(tenant_id,channel_msg_id)` (763) | 按月分区，旧分区归档 |
 | event | A-1 导入 | A-2 消费匹配、Agent 复盘事件史 | 复合 FK customer (769)、UNIQUE `(tenant_id,dedup_key)` (774) | 默认 90 天归档删除 |
 | unsubscribe | A-5 回执退订、用户主动退订（POST /api/unsubscribe，9.5） | A-4 发送前查重 | UNIQUE `(customer_key,channel)` 全局 (784) | 常驻（平台级） |
 | agent_run | 链路 B 全状态 | 会话恢复、审计回放（含 tokens_used 计量） | user FK (791)、tokens_used (797) | 长期保留，两年压缩 |
@@ -290,7 +288,6 @@ flowchart LR
 | `ea:events:dlq` | 死信队列（解析失败消息） | 保留待处置 |
 | `ea:idem:{tenant}:{requestId}` | 幂等器 SETNX + 首结果缓存 | TTL 24h |
 | `ea:fc:{tenant}:{channel}:{customerId}:{date}` | 频控计数（日/周） | 按日滚动 |
-| `ea:cd:{tenant}:{campaign}:{customerId}` | 冷却窗：SETNX 抑制同客户同任务重复触达（3.5/10.3，`trigger_rule.cooldown`） | TTL = cooldown（如 1h），到期自删 |
 | `ea:cb:{channel}` | 通道熔断计数 | 熔断窗口 60s |
 | `RedisLock`（`ea:lock:*`） | 调度/幂等/审批并发互斥 | 锁 TTL |
 | AgentSession（`agent:session:*`） | 会话状态 + 租户绑定 | 会话生命周期 |
@@ -303,8 +300,6 @@ flowchart LR
 | 回执回调 | `(tenant_id, channel_msg_id)` | DB 唯一约束，NULL 共存安全 | 763 行 |
 | 事件导入 | `(tenant_id, dedup_key)` | DB 唯一约束，冲突跳过 | 774 行 / 10.3 |
 | 事件消费重放 | `(tenant_id, dedup_key)` | 消费端二次确认 | 3.5 |
-| 同客户同任务 | 任务维度去重 | 应用层：SETNX `ea:cd:{tenant}:{campaign}:{customerId}` TTL=cooldown（冷却窗）+ 调度去重 | 3.5 / 10.3 / 10.1 |
-| AB 分组 | `SHA256(tenant\|campaign\|customer) % 100` | 确定性分桶（3.5.1）：组间不重复、重试/复盘分组稳定；同 campaign 冷却窗抑制发送 | 3.5.1 / 10.3 |
 
 ### 7.3 分区、归档与加密边界
 
@@ -353,3 +348,4 @@ flowchart LR
 | v1.2 | 2026-09-04 | 同步详细设计 v1.4：7.1 key 清单补冷却窗键 `ea:cd:{tenant}:{campaign}:{customerId}`（SETNX + TTL=cooldown，去重总表 7.2 落实）；§6 unsubscribe 写入点闭环（POST /api/unsubscribe）；§6 agent_run 补 tokens_used 计量；7.3 event 归档表定名 event_archive；3.4 图错误码修正（模板变量缺失 E-12003 → E-10001） |
 | v1.3 | 2026-09-04 | 同步详细设计 v1.5（AB 实验）：§6 全表行号引用重对齐至当前 8.1 DDL（含原漂移修正：delivery 762/763、event 769/774、unsubscribe 784、agent_run 791 等）；campaign 行补 AB 三列（705-707）、delivery 行补 ab_group（755）；7.2 去重总表补「AB 分组」行（SHA256 确定性分桶）；§5 复合 FK 纵深标注 v1.3 |
 | v1.4 | 2026-09-04 | 同步详细设计 v1.6 / 架构 v1.4：登记技术栈设计文档（ea-agent-tech-stack.md v0.1，Redis 实现要点与 key 命名空间对齐 7.1）；5 章边界表租户过滤实现措辞对齐（应用层显式 tenant_id 条件 + 复合 FK 兜底，不用租户插件重写 SQL） |
+| v1.5 | 2026-09-06 | 同步详细设计 v1.7 / 架构 v1.5 / 代码 V12（移除灰度与 AB 实验机制）：§6 campaign 行去「AB 分桶」读点与 chk_campaign_ab / ab 三列约束、delivery 行去「ab-report 聚合」与 ab_group 约束；7.2 去重总表删「AB 分组」行；冷却窗（ea:cd）设计移除后 7.1 key 清单与措辞同步；头部对应版本更新为 v1.5 |

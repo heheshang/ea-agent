@@ -17,8 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * createCampaign（10.4）：创建任务（OPERATOR 起，灰度/AB/触发规则参数一次成型）；
- * 状态初始 DRAFT → 事件驱动/调度后 RUNNING。ab_variants 占比合计 ≤ ab_split。
+ * createCampaign（10.4）：创建任务（OPERATOR 起，触发规则参数一次成型）；
  */
 @Component
 public class CreateCampaignAction extends AbstractAction {
@@ -41,7 +40,7 @@ public class CreateCampaignAction extends AbstractAction {
     public ActionMeta meta() {
         return ActionMeta.builder()
                 .name("createCampaign")
-                .description("创建触达任务（灰度/AB/触发规则一次成型；trigger_rule 必填：含 event_type，可按需附 window/cooldown）")
+                .description("创建触达任务（触发规则一次成型；trigger_rule 必填：含 event_type，可按需附 window）")
                 .requiredArgs(List.of("name", "audience_id", "channel", "template_id"))
                 .permissions(List.of(Roles.OPERATOR))
                 .build();
@@ -57,11 +56,6 @@ public class CreateCampaignAction extends AbstractAction {
         c.setTemplateId(req.getLong("template_id"));
         c.setSchedule(req.get("schedule") == null ? null : java.time.Instant.parse(String.valueOf(req.get("schedule"))));
         c.setCron(req.getString("cron"));
-        c.setGrayRatio(req.getInt("gray_ratio") == null ? 100 : req.getInt("gray_ratio"));
-        String abMode = req.getString("ab_mode");
-        c.setAbMode(abMode == null ? CampaignEntity.AB_MODE_NONE : abMode);
-        c.setAbSplit(req.getInt("ab_split"));
-        c.setAbVariants(req.getList("ab_variants"));
         List<Map<String, Object>> routing = req.getList("template_routing");
         templateRoutingService.validate(ctx.tenantId(), routing);
         c.setTemplateRouting(routing);

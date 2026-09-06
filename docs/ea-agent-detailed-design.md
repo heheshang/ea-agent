@@ -153,10 +153,10 @@ public record FieldDef(String name, FieldType type, boolean queryable, boolean s
 |---|---|---|---|
 | CUSTOMER_FIELDS | customer | id, status, external_id, created_at, updated_at, attributes.* | phone / email / wechat_openid（`attributes` 动态路径运行时检测掩码） |
 | AUDIENCE_FIELDS | audience | id, name, mode, rule, owner_id, created_at | —（rule 为业务配置，非个人数据；成员明细走 `links()`） |
-| CAMPAIGN_FIELDS | campaign | id, name, status, schedule, gray_ratio, ab_mode, ab_split, ab_variants, trigger_rule, audience_id, template_id, owner_id, created_at | — |
+|| CAMPAIGN_FIELDS | campaign | id, name, status, schedule, trigger_rule, audience_id, template_id, owner_id, created_at | — |
 | TEMPLATE_FIELDS | template | id, name, channel, review_status, created_at | content（含 var 引用，渲染脱敏预览） |
 | CHANNEL_FIELDS | channel | id, channel, enabled, frequency_limit, created_at | config_encrypted / callback_secret **永不投影**（无对应 FieldDef） |
-| DELIVERY_FIELDS | delivery | id, campaign_id, customer_id, channel, status, gray_hit, request_id, created_at | — |
+|| DELIVERY_FIELDS | delivery | id, campaign_id, customer_id, channel, status, request_id, created_at | — |
 | EVENT_FIELDS | event | id, customer_id, event_type, payload, dedup_key, created_at | payload 内 phone/email 键运行时掩码 |
 
 规则：
@@ -289,50 +289,6 @@ public record EventRecord(Long id, Long tenantId, String customerId,
 
 消费端幂等：每消息按 `(tenant_id, dedup_key)` 再次确认（容错「消费成功但未 ACK」重放）。
 
-**消费匹配冷却窗**（`trigger_rule.cooldown`，如 `{"cooldown":"1h"}`）：命中规则触发 `sendTouch` 前，SETNX `ea:cd:{tenant}:{campaign}:{customerId}`（TTL = cooldown 时长）——已存在即跳过（同客户同任务去重，数据流 7.2 行「同客户同任务」的载体）；SETNX 成功才入触达队列。冷却窗键由消费端创建、到期自动失效，不落库（仅运行时抑制；`delivery` 表仍记录实际触达实例供审计）。
-
-### 3.5.1 AB 实验（实验分组与度量）
-
-演进路线「阶段三：灰度/AB」（架构 12）中 AB 部分的设计定案：
-
-**模型**：campaign 级 AB 实验，扩展 `campaign` 三列（8.1），不新建实验表——实验是任务编排属性而非独立实体，与灰度（gray_ratio）同层：
-
-```java
-campaign.ab_mode     varchar(8)  NOT NULL DEFAULT 'NONE'  -- NONE|AB
-campaign.ab_split    smallint    NOT NULL DEFAULT 0       -- 变体总占比 1-99（CONTROL 吃剩余）
-campaign.ab_variants jsonb       NOT NULL DEFAULT '[]'    -- 变体数组，见下
-```
-
-```jsonc
-// ab_variants：1-3 个变体，按序对应 bucket 区间 [0, s1) [s1, s2) …
-[
-  {"name": "A", "channel": "email", "template_id": 12,
-   "frequency_limit": {"max_per_day": 2}, "gray_ratio": 100},
-  {"name": "B", "channel": "sms",   "template_id": 34}
-]
-```
-
-- **变体只允许策略差异**：channel / template_id / frequency_limit / gray_ratio 覆盖；人群（audience_id）与触发规则（trigger_rule）固定为主 campaign 配置——保证组间可比（单变量归因约束：一次实验只改一个策略维度，多变量同时改则结论不可归因）。
-- **对照组 = 主 campaign 配置**（非变体覆盖）：bucket ≥ 变体总占比 的客户走原 channel / template_id / frequency_limit——对照「当前线上策略」。
-
-**分桶**（消费匹配管线，10.3 步骤 5，位于灰度过滤之后）：
-
-```
-冷却窗 SETNX → 灰度过滤（gray_ratio 抽样，命中写 delivery.gray_hit）
-→ 确定性分桶：bucket = SHA256(tenant_id || campaign_id || customer_id) 取模 100
-   bucket ∈ [0, s1) → TREATMENT_A；[s1, s2) → TREATMENT_B；…；≥ 总占比 → CONTROL
-→ 变体配置覆盖 → sendTouch → delivery.ab_group 落库（组别审计）
-```
-
-- **确定性 hash 分桶**（非随机抽样）：同一客户在重试 / 复盘 / 多次触发下分组稳定，且无跨组重复（一个 customer 只进一组）；冷却窗在 campaign 维度，同客户同任务只发送一次，与分组正交。
-- `delivery.ab_group varchar(16) NULL`：NULL=非实验，CONTROL / TREATMENT_A / TREATMENT_B / TREATMENT_C。
-
-**度量与复盘**：
-- `GET /api/campaigns/{id}/ab-report`（7.1）：按 `ab_group × delivery.status` 聚合 + 后续转化事件计数（event 按 customer_id 关联，`trigger_rule.conversion_event` 如 `order_paid`）——前端实验面板渲染组间对比（7.3）。
-- Agent 复盘（10.1 步骤 10）：`queryDelivery` 支持 `ab_group` 过滤，对比各组触达成功率 / 转化率后给出实验结论，写入 agent_run（决策痕迹）。
-
-**审批**：AB 配置（开关 / split / 变体）任一变更与实验启动走既有 campaign 审批（4.4）；变体引用新模板仍走模板审核门控。
-
 ### 3.6 调度器
 
 - 框架：Spring `@Scheduled` + `RedisLock` 分布式互斥（多实例防重复触发）。
@@ -420,7 +376,7 @@ public static final String STATUS_NEW = "NEW"; // 其余：PLANNING / AWAITING_A
 
 ### 4.4 审批门控
 
-- **判定**：`applyAction` 工具调用前，按「Agent 权限 = 发起用户 RBAC 下放」（7 章）推断；动作 ∈ {全量触达（灰度=100%）、delete 类} 或建议模式 → 进入 AWAITING_APPROVAL。
+- **判定**：`applyAction` 工具调用前，按「Agent 权限 = 发起用户 RBAC 下放」（7 章）推断；动作 ∈ {全量触达、delete 类} 或建议模式 → 进入 AWAITING_APPROVAL。
 - **请求模型**：`ApprovalRequest(runId, actionName, argsSummary, dangerLevel, requestedAt)` 写入 `agent_run.decisions` 并置状态。
 - **审批接口**：`POST /api/agent/runs/{runId}/approval {decision: APPROVE|REJECT, actorId}`；权限：操作者 ≥ 发起用户角色 且 具备该 Action 权限；并发用 RedisLock 防重复审批。
 - **超时**：审批超时（默认 10 分钟）自动拒绝 → CANCELLED。
@@ -573,7 +529,6 @@ public interface ChannelAdapter {
 | POST | /api/campaigns/{id}/pause | campaign.write | 暂停（= pauseCampaign） |
 | POST | /api/campaigns/{id}/resume | campaign.write | 恢复 |
 | POST | /api/campaigns/{id}/trigger | campaign.write | 手动立即触达 |
-| GET | /api/campaigns/{id}/ab-report | campaign.read | AB 实验组间对比聚合（3.5.1：ab_group × status + 转化事件） |
 | GET/POST/PATCH | /api/templates | template.read/write | 模板 CRUD |
 | POST | /api/templates/{id}/submit | template.write | 提交审核 |
 | POST | /api/templates/{id}/review | template.review | 审核通过/驳回 |
@@ -604,7 +559,7 @@ App
 ├── Layout (Sidebar / Header / TenantInfo)
 │   ├── CustomerList → CustomerDetail(画像卡/触达历史/标签/UnsubscribeButton 退订登记)
 │   ├── AudienceList → AudienceRuleEditor(DSL 规则构建器/成员预览)
-│   ├── CampaignList → CampaignCanvas(人群×渠道×模板×时间×灰度画布/实验面板：AB 变体编辑 + split + 组间对比视图)
+│   ├── CampaignList → CampaignCanvas(人群×渠道×模板×时间×触发规则画布)
 │   ├── TemplateList → TemplateEditor(var 变量校验)
 │   ├── ChannelList → ChannelEditor(凭据录入/连通性测试)
 │   ├── DeliveryMonitor(实时量/到达率/回执分布/失败明细)
@@ -700,20 +655,11 @@ CREATE TABLE campaign (
   template_id   bigint NOT NULL REFERENCES template(tenant_id, id),
   schedule      timestamptz,                    -- 一次性时间；周期任务用 cron
   cron          varchar(64),
-  gray_ratio    int NOT NULL DEFAULT 100,       -- 灰度百分比；审批判定「全量=100」（4.4）
-  ab_mode       varchar(8)  NOT NULL DEFAULT 'NONE', -- NONE|AB 实验模式（3.5.1）
-  ab_split      smallint    NOT NULL DEFAULT 0,      -- 变体总占比 1-99，CONTROL 吃剩余
-  ab_variants   jsonb       NOT NULL DEFAULT '[]',   -- 变体数组（channel/template_id/frequency_limit/gray_ratio 覆盖，1-3 个）
   owner_id      bigint NOT NULL REFERENCES tenant_user(tenant_id, id),  -- dynamic security 归属（9.2，D）
   trigger_rule  jsonb,                          -- 事件触发规则（详细设计补充，见 8.4）
   status        varchar(16) NOT NULL DEFAULT 'DRAFT', -- DRAFT|SCHEDULED|RUNNING|PAUSED|FINISHED|FAILED
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT chk_campaign_gray CHECK (gray_ratio BETWEEN 0 AND 100),
-  CONSTRAINT chk_campaign_ab CHECK (
-    ab_mode = 'NONE' OR (ab_split BETWEEN 1 AND 99 AND jsonb_typeof(ab_variants) = 'array'
-                         AND jsonb_array_length(ab_variants) BETWEEN 1 AND 3)
-  ),                                            -- 实验模式时 split 1-99 且 1-3 个变体（3.5.1）
   UNIQUE (tenant_id, id)                        -- 供 delivery 复合 FK（8.4）
 );
 
@@ -750,8 +696,6 @@ CREATE TABLE delivery (
   channel       varchar(16) NOT NULL,
   template_id   bigint REFERENCES template(tenant_id, id),
   channel_msg_id varchar(128),                  -- 通道侧消息 ID（回执关联）
-  gray_hit      boolean NOT NULL DEFAULT false, -- 灰度抽样命中审计（E）
-  ab_group      varchar(16),              -- AB 组别：NULL=非实验|CONTROL|TREATMENT_A/B/C（3.5.1）
   status        varchar(16) NOT NULL DEFAULT 'PENDING',
                 -- PENDING|SENT|DELIVERED|BOUNCED|FAILED|UNSUBSCRIBED
   error         text,
@@ -835,14 +779,14 @@ CREATE INDEX idx_audience_member       ON audience_member (tenant_id, customer_i
 
 ### 8.4 详细设计补充字段说明
 
-- `campaign.trigger_rule`：事件驱动触发规则（`{"event_type":"order_placed","window":"1d","cooldown":"1h"}`），供 3.5 事件消费端匹配。
+- `campaign.trigger_rule`：事件驱动触发规则（`{"event_type":"order_placed","window":"1d"}`），供 3.5 事件消费端匹配。
 - `unsubscribe` 表：**平台级全局退订总表**——任一租户内客户退订即全平台生效；`UNIQUE (customer_key, channel)` 全局唯一，跨租户查重直接命中（`customer_key` 为哈希，不含明文手机号）。`tenant_id` 仅记录登记租户（归属审计），不是隔离键；退订检查发生在业务校验（9.5），先查本租户、再查全局表。
 - **数据完整性要点**（本次 review 加固）：
   - **复合 FK 跨租户拦截**：业务表间引用一律 `REFERENCES x(tenant_id, id)`（配合目标表 `UNIQUE (tenant_id, id)`）——DDL 层面杜绝租户 B 记录引用租户 A 对象（campaign→audience/template、delivery→campaign/customer/template、audience_member→audience/customer、event→customer）；「租户 A 的 token 查租户 B 对象」由 5.4 归属校验（E-12002）拦截，两者互为纵深。
   - **归属字段**：`audience.owner_id` / `campaign.owner_id` / `agent_run.user_id` `REFERENCES tenant_user(tenant_id, id)`（复合 FK，杜绝跨租户 owner），创建时 = 当前用户（dynamic security D）。
   - **幂等唯一约束清单**：`delivery(tenant_id, request_id)`（发送）、`delivery(tenant_id, channel_msg_id)`（回执回调，NULL 不冲突）、`event(tenant_id, dedup_key)`（事件导入）。其余写操作（campaign/template 等）由 Redis IdempotencyService（2.2）兜底，不落库。
   - **敏感列**：`channel_config.config_encrypted` 与 `callback_secret` 均为信封加密密文（9.3），明文仅存在于调用栈，不落日志、不落库、回显脱敏。
-  - **CHECK 约束**：`chk_audience_mode`（模式-rule 互斥，A）、`chk_campaign_gray`（gray_ratio ∈ [0,100]，支撑 4.4 审批判定「全量=100%」）、`chk_campaign_ab`（ab_mode=AB 时 ab_split ∈ [1,99] 且 1-3 个变体，3.5.1）。
+  - **CHECK 约束**：`chk_audience_mode`（模式-rule 互斥，A）。
 - 其余字段与架构文档 8.2 草案一致，表级对应关系见附录 C。
 
 ### 8.5 Ontology 资产与持久化策略
@@ -852,13 +796,13 @@ CREATE INDEX idx_audience_member       ON audience_member (tenant_id, customer_i
 | 资产层 | 内容 | 存储位置 | 变更方式 | 依据 |
 |---|---|---|---|---|
 | 定义层（代码工件，**不入业务库**） | TypeRegistry `ObjectTypeDef`、`LinkDef`、ActionRegistry `@ActionDef`、ChannelAdapter/ToolRegistry | 代码，Git 版本化 | 发版（启动扫描注册） | 3.1 / 3.3 / 3.4；编译期类型安全，新增对象类型只加 Def 不改枚举与 Action 代码（C） |
-| 规则层（对象属性，**入库**） | `audience.rule`（人群 DSL）、`campaign.trigger_rule`（事件触发）、`channel_config.frequency_limit`（频控/时段） | 对象表 text / jsonb 列（675 / 709 / 739 行） | 运行时对象 API | 规则是租户业务配置而非平台逻辑：运行时变更、随对象行租户隔离、历史可审计；平台逻辑（校验链、频控算法、灰抽样）仍是代码 |
+| 规则层（对象属性，**入库**） | `audience.rule`（人群 DSL）、`campaign.trigger_rule`（事件触发）、`channel_config.frequency_limit`（频控/时段） | 对象表 text / jsonb 列（629 / 659 / 684 行） | 运行时对象 API | 规则是租户业务配置而非平台逻辑：运行时变更、随对象行租户隔离、历史可审计；平台逻辑（校验链、频控算法）仍是代码 |
 | 实例层（对象数据，**入库**） | 7 对象 ↔ 13 表（附录 C）；STATIC 成员、链接实例 | PostgreSQL | 对象 API / Action | DYNAMIC 成员与链接关系 = RuleEngine 实时派生查询，不落副本（3.3，对应 Palantir Derived Link：「对象是数据的视图，不是副本」） |
-| 痕迹层（决策记录，**入库**） | `action_log`（全量审计）、`agent_run.plan / decisions`（决策回放）、`delivery`（触达实例 + gray_hit 灰度审计） | PostgreSQL，不可变，无更新 API | Action 管线第 6 步异步 / 会话状态机落库 | 3.4 / 9.4 / 10.1-10.2；对应 Palantir Action Logs |
+| 痕迹层（决策记录，**入库**） | `action_log`（全量审计）、`agent_run.plan / decisions`（决策回放）、`delivery`（触达实例） | PostgreSQL，不可变，无更新 API | Action 管线第 6 步异步 / 会话状态机落库 | 3.4 / 9.4 / 10.1-10.2；对应 Palantir Action Logs |
 
 **事件双写**（3.5）：`event` 表 = 持久业务对象（复盘 / 客户事件史 / 归档依据），EA-Bus Stream（`ea:events` / `ea:touch`）= 传输队列；Stream 不是业务数据的唯一载体，消费确认与表数据相互印证。
 
-**规则入库而非代码的边界**：凡「租户可运行时调整的业务配置」（人群条件、触发规则、频控时段）一律作为对象属性落库——天然租户隔离 + 审计；凡「平台行为」（校验顺序、幂等算法、灰度抽样、加密）一律留在代码，杜绝用数据表承载平台逻辑（避免出现「规则表 + 规则引擎解释器」的重量级动态化）。
+**规则入库而非代码的边界**：凡「租户可运行时调整的业务配置」（人群条件、触发规则、频控时段）一律作为对象属性落库——天然租户隔离 + 审计；凡「平台行为」（校验顺序、幂等算法、加密）一律留在代码，杜绝用数据表承载平台逻辑（避免出现「规则表 + 规则引擎解释器」的重量级动态化）。
 
 **扩展路径**：当前 7 类型编译期封闭，取类型安全；若未来需免发版运行时建模（运营自助加对象类型），再引入 schema 元数据表（`object_type_def` / `field_def`），届时 TypeRegistry 改为从元数据表装载——8.5 定义层策略随之迁移到实例/规则层同类机制。
 
@@ -896,7 +840,7 @@ CREATE INDEX idx_audience_member       ON audience_member (tenant_id, customer_i
 | audience | owner_id | 非 owner：仅 REVIEWER / ADMIN 可读写 |
 | campaign | owner_id | 非 owner：仅 REVIEWER / ADMIN 可读写 |
 
-**Agent 权限下放**：`role(agent) = role(发起用户)` 裁剪后的工具白名单；`applyAction` 仅放行 ≤ 用户角色可达的 Action；高危动作（灰度为 100% 的全量触达、删除类）即使 ADMIN 发起也进审批（4.4）。
+**Agent 权限下放**：`role(agent) = role(发起用户)` 裁剪后的工具白名单；`applyAction` 仅放行 ≤ 用户角色可达的 Action；高危动作（全量触达、删除类）即使 ADMIN 发起也进审批（4.4）。
 
 ### 9.3 凭据加密（信封加密）
 
@@ -972,8 +916,8 @@ CREATE INDEX idx_audience_member       ON audience_member (tenant_id, customer_i
 1. POST /api/events（event.import）→ importEvents Action
 2. 校验管线 → IdempotencyValidator((tenant_id, dedup_key))
 3. 写 event 表（唯一冲突=重复事件，跳过）→ XADD ea:events
-4. 消费组 ea:consumer 读取 → 重建租户上下文 → 匹配 campaign.trigger_rule（启用 + RUNNING + 事件类型 + 冷却窗；冷却窗 = 消费端 SETNX `ea:cd:{tenant}:{campaign}:{customerId}` TTL=cooldown，见 3.5）
-5. 命中 → 灰度过滤（gray_ratio 抽样，命中写 delivery.gray_hit，E）→ AB 确定性分桶（campaign.ab_mode=AB 时：SHA256 取模 100 定组，变体配置覆盖，写 delivery.ab_group，3.5.1）→ sendTouch（同客户同任务由冷却窗 + 调度去重抑制）
+4. 消费组 ea:consumer 读取 → 重建租户上下文 → 匹配 campaign.trigger_rule（启用 + RUNNING + 事件类型）
+5. 命中 → sendTouch（同客户同任务由调度去重抑制）
 6. XACK；失败消息 → ea:events:dlq + 告警（人工/自动化处置）
 ```
 
@@ -1098,6 +1042,7 @@ ea:
 | v1.4 | 2026-09-04 | 缺口补齐（对应数据流 v1.2 / 架构 v1.2）：3.1.1 字段白名单（FieldDef + 7 组字段清单，附 attributes 动态路径与脱敏规则）；9.1 MFA 流程契约（challenge/verify 端点、X-MFA-Token、E-10004、11.1 配置）；9.5 主动退订端点 /api/unsubscribe（含前端入口）；冷却窗 Redis 载体 ea:cd:{tenant}:{campaign}:{customerId}（3.5/10.3）；agent_run 补 tokens_used 计量列（10.2）；SSE 两段式定案（POST 发起 + GET 订阅）；8.3 event 归档表定名 event_archive；15003 赋真实场景（审批未决重提拒绝）；纠错：8.5 行号引用（643/634 → 602/633）、错误码 10xxx 段位表补 10004 |
 | v1.5 | 2026-09-04 | AB 实验设计定案（对应数据流 v1.3 / 架构 v1.3）：新增 3.5.1 —— campaign 级 AB（ab_mode/ab_split/ab_variants 三列，不建实验表）、确定性 SHA256 分桶（灰度过滤之后、写 delivery.ab_group）、变体仅策略差异（单变量归因约束）、对照组=主 campaign 配置、ab-report 聚合端点与 Agent 复盘接线；DDL：campaign 插 3 列 + chk_campaign_ab CHECK、delivery 插 ab_group；7.3 前端实验面板；行号引用精修：8.5 规则层（675 / 709 / 739） |
 | v1.6 | 2026-09-04 | 登记技术栈设计文档（ea-agent-tech-stack.md v0.1，工程基线：版本选型 / 依赖清单 / 装配 / 配置骨架 / 联调启动，对应架构 v1.4）；1.3 全局约定与技术栈文档对齐（模块划分、多租户禁用租户插件的实现落点）；5.3 读写双闸 / 5.5 边界表租户过滤实现措辞对齐（应用层显式 tenant_id 条件 + 复合 FK 兜底，不用租户插件重写 SQL，与 8.4 一致） |
+| v1.7 | 2026-09-06 | 移除灰度与 AB 实验机制（对应架构 v1.5 / 数据流 v1.5 / 代码 V12 迁移）：删 campaign.gray_ratio/ab_mode/ab_split/ab_variants、delivery.gray_hit/ab_group 与 chk_campaign_gray/chk_campaign_ab；删除 3.5.1 AB 实验节、ab-report 聚合端点、7.3 实验面板、冷却窗（ea:cd:* / trigger_rule.cooldown）设计；事件消费时序收敛为「匹配触发规则 → sendTouch」；审批判定与前端画布措辞同步去灰度/AB |
 
 ## 附录 B：错误码表
 

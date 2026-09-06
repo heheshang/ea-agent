@@ -16,14 +16,14 @@
 | 运行时 | JDK | 17（LTS） | 服务基线 | agentscope-harness 要求 JDK 17+（架构 9.1） |
 | 后端框架 | Spring Boot | 3.4.x | 服务编排、Web、异步、SSE | 与 JDK 17 / MyBatis-Plus 3.5 兼容；可平滑升 3.5 |
 | 数据访问 | MyBatis-Plus | 3.5.9+（`mybatis-plus-spring-boot3-starter`） | ORM、分页、JSON 映射 | 详细设计 8（DDL 对齐） |
-| 数据库 | PostgreSQL | 16 + pgjdbc | 业务库；jsonb / 复合 FK / CHECK / 分区 | DDL 8.1（chk_campaign_ab 等依赖 jsonb 函数） |
-| 缓存/队列 | Redis | 7.x + Lettuce（Spring Data Redis） | 幂等（ea:idem:*）、冷却窗（ea:cd:*）、频控（ea:fc:*）、熔断（ea:cb:*）、EA-Bus 事件流（ea:events Streams）、MFA 挑战 | 数据流 7.1/7.2 |
+| 数据库 | PostgreSQL | 16 + pgjdbc | 业务库；jsonb / 复合 FK / CHECK / 分区 | DDL 8.1（CHECK 依赖 jsonb 函数） |
+| 缓存/队列 | Redis | 7.x + Lettuce（Spring Data Redis） | 幂等（ea:idem:*）、频控（ea:fc:*）、熔断（ea:cb:*）、EA-Bus 事件流（ea:events Streams）、MFA 挑战 | 数据流 7.1/7.2 |
 | AI 框架 | agentscope-java-2.0 | `io.agentscope:agentscope-harness` 2.0.x | ReActAgent/HarnessAgent、工具权限、31 类 Agent 会话事件、分布式会话记忆 | 架构 9.1 [6] |
 | 编译期 | Lombok | 1.18.3x | 样板代码 | 既有技术栈行 |
 | 前端框架 | Vue | 3.4+ | 组合式 SFC | 7.3 组件树 |
 | 前端语言 | TypeScript | 5.4+（strict） | 类型安全（DTO 与后端契约） | 7.3 |
 | 构建 | Vite | 5.x | dev server / 按需构建 | — |
-| UI | Element Plus | 2.7+ + `@element-plus/icons-vue` | 组件库、画布、实验面板 | 7.3 |
+| UI | Element Plus | 2.7+ + `@element-plus/icons-vue` | 组件库、画布 | 7.3 |
 | 状态 | Pinia | 2.1+ | 租户上下文 / 会话 / Agent 聊天流 | — |
 | HTTP | Axios | 1.7+ | REST 调用、拦截器 | 7.1 API 清单 |
 | 测试 | JUnit 5 + Mockito + Testcontainers | 5.10+ / 5.9+ / 1.19+ | 单元；`postgres:16` `redis:7` 集成 | — |
@@ -38,7 +38,7 @@
 ea-app        启动装配、网关过滤器（X-Tenant-Id 解析 → TenantContext）、全局异常
 ea-api        REST 控制器、DTO、SSE 协议类（EventPayload/EventType 31 类）
 ea-ontology   对象模型（TypeRegistry/ObjectTypeDef/LinkDef）、ActionRegistry + applyAction 管线、
-              对象 API 实现、EA-Bus 消费（Streams）、调度器、灰度/AB 分桶
+              对象 API 实现、EA-Bus 消费（Streams）、调度器
 ea-agent      agentscope 装配：AgentRunner、@Tool 注册（applyAction）、会话状态机、审批门控、记忆
 ea-channel    通道适配器（email/sms/wechat/push）、回执回调、ConsoleChannelAdapter 降级
 ea-common     租户上下文（TenantContext ThreadLocal）、错误码、Result、幂等器、
@@ -52,7 +52,7 @@ ea-common     租户上下文（TenantContext ThreadLocal）、错误码、Resul
 ```
 ea-web/src
 ├── api/        axios.ts（拦截器）、sse.ts（fetch+ReadableStream）、*.ts 业务 API
-├── components/ Element Plus 业务组件（CampaignCanvas、实验面板、AudienceRuleEditor…）
+├── components/ Element Plus 业务组件（CampaignCanvas、AudienceRuleEditor…）
 ├── stores/     tenant.ts / session.ts / agentChat.ts（Pinia）
 ├── router/     （守卫：登录态 + MFA 挑战流）
 ├── views/      （对象管理页、Agent 对话页）
@@ -71,7 +71,7 @@ ea-web/src
 **4.2 MyBatis-Plus 与多租户**
 
 - **不用 MyBatis-Plus 租户插件**（TenantLine 拦截器重写 SQL 注入租户条件）——租户隔离采用既有纵深：应用层 `TenantContext` 注入 + 写路径显式 `tenant_id` + DDL 复合 FK `REFERENCES x(tenant_id, id)` 拦截跨租户（详细设计 8.4）。理由：人群 DYNAMIC 成员等 RuleEngine 动态派生 SQL 无法插件化注入租户条件；复合 FK 已在存储层兜底（ADR-1 / 数据流 §6）。
-- `JacksonTypeHandler` 映射 jsonb 列：`customer.attributes`、`campaign.trigger_rule / ab_variants`、`channel_config.frequency_limit` 等。
+- `JacksonTypeHandler` 映射 jsonb 列：`customer.attributes`、`campaign.trigger_rule`、`channel_config.frequency_limit` 等。
 - `PaginationInnerInterceptor` 分页；主键 `IdType.ASSIGN_ID`（雪花，分区表友好）。
 - boolean/枚举列保持 varchar/smallint 显式类型，不做字段级魔法。
 
@@ -83,7 +83,6 @@ ea-web/src
 | key | 容量 | TTL | 用途 |
 |---|---|---|---|
 | `ea:idem:{tenant}:{requestId}` | SETNX | 24h | 写操作幂等 |
-| `ea:cd:{tenant}:{campaign}:{customerId}` | SETNX | =cooldown | 冷却窗（同客户同任务去重） |
 | `ea:fc:{tenant}:{channel}:{customerId}:{date}` | INCR | 当日 | 频控计数 |
 | `ea:cb:{channel}` | SET | 60s | 通道熔断 |
 | `ea:mfa:{userId}` | STRING | 挑战 TTL | MFA 挑战（9.1） |
@@ -94,14 +93,14 @@ ea-web/src
 
 **4.4 PostgreSQL**
 
-- 复合 FK 纵深 + CHECK（`chk_campaign_gray` / `chk_campaign_ab`）全部按 8.1 DDL 建表；schema 脚本来源于 8.1，可接 Flyway 版本化（基线不强制）。
+- 复合 FK 纵深 + CHECK（`chk_audience_mode`）按 8.1 DDL 建表；schema 脚本来源于 8.1，可接 Flyway 版本化（基线不强制）。
 - `delivery` 按月 RANGE 分区预建（调度任务每月 25 日预建下月分区，8.3）；`event` 默认 90 天归档到 `event_archive`（8.3）。
 
 **4.5 agentscope-java-2.0**
 
 - 初始化：`AgentScope.init`（模型配置：OpenAI 兼容网关，环境变量 `MODEL_API_KEY / MODEL_BASE_URL / MODEL_NAME`，默认 DashScope 兼容端点；模型接入点抽象在 `ea-agent`，可切 Ollama 本地验证）。
 - 工具注册：`@Tool` 注册到 AgentRunner——**真实执行工具仅 `applyAction`**（ActionRegistry 委托，3.3/ADR-3）；决策咨询函数经 `FunctionRegistry` 注册、`callFunction` 单工具路由（audienceStats / frequencyCheck / channelPreference / churnRiskScore / bestSendTime，只读咨询，与 ActionRegistry 对称）。
-- 权限模式：建议模式 = require approval（高危动作转人工，4.4）；自动模式 = allow（限定工具 + 灰度范围）。
+- 权限模式：建议模式 = require approval（高危动作转人工，4.4）；自动模式 = allow（限定工具范围）。
 - 会话事件：31 类 Agent 会话事件（thinking/tool_call/approval_required/text_delta/done…）经 `SseEmitter` 流式回传（3.5/7.4）。
 - 会话与记忆：`AgentSession` 存 Redis（7.2）；`agent_run` 落库（plan/decisions/tokens_used，10.2）。
 
@@ -124,7 +123,7 @@ ea-web/src
 **5.1 工程与组件**
 
 - Vue3 `<script setup>` 组合式 SFC；TS `strict`；Element Plus 按需引入（`unplugin-vue-components` + `ElementPlusResolver`）；图标 `@element-plus/icons-vue`。
-- 关键业务组件对应 7.3 组件树：CampaignCanvas（人群×渠道×模板×时间×灰度画布 + 实验面板）、AudienceRuleEditor、CustomerDetail、AgentChatView。
+- 关键业务组件对应 7.3 组件树：CampaignCanvas（人群×渠道×模板×时间×触发规则画布）、AudienceRuleEditor、CustomerDetail、AgentChatView。
 
 **5.2 网络层**
 
@@ -168,8 +167,6 @@ ea:
     executor-cores: 8
     emitter-timeout-ms: 30000
     heartbeat-ms: 15000
-  cooldown:
-    default: 1h            # 冷却窗默认 TTL（3.5）
   partition:
     precreate-day: 25      # delivery 分区预建日（8.3）
   security:
@@ -213,7 +210,7 @@ services:
 1. `docker compose up -d`（PG16 + Redis7）→ 执行 8.1 建表脚本（或 Flyway migrate）。
 2. 启动 `ea-app`（`mvn -pl ea-app spring-boot:run`，默认 8080）；本地无真实通道时未配置通道走 ConsoleChannelAdapter 降级（6.2）。
 3. `cd ea-web && pnpm dev`（默认 5173，/api /agent 代理到 8080）。
-4. 联调顺序建议：租户登录（JWT + X-Tenant-Id）→ 对象 CRUD（幂等头验证）→ 模板/通道配置 → 人群 DSL → 任务编排（灰度 → AB）→ 事件导入触发 → Agent 对话 SSE 全链路。
+4. 联调顺序建议：租户登录（JWT + X-Tenant-Id）→ 对象 CRUD（幂等头验证）→ 模板/通道配置 → 人群 DSL → 任务编排 → 事件导入触发 → Agent 对话 SSE 全链路。
 
 ## 8. 与既有设计的一致性
 
@@ -224,6 +221,5 @@ services:
 | `applyAction` 单一工具 | ea-agent @Tool → ActionRegistry 委托 | 3.3 / ADR-3 |
 | TypeRegistry / dynamic security | ea-ontology 对象模型 + 归属校验（E-12005） | 3.1 / 5.4 |
 | `(tenant_id, request_id)` 幂等 | IdempotencyService + 唯一约束 | 数据流 2.2 |
-| 灰度 / AB 分桶 | SHA256 确定性分桶（ea-ontology 消费端） | 3.5.1 / 10.3 |
 | 多租户 | 不用租户插件；TenantContext + 复合 FK | ADR-1 / 8.4 |
 | 明文边界 | 信封加密密文落库，明文仅调用栈 | 9.3 / 6.2 |

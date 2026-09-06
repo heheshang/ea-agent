@@ -8,8 +8,9 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 /**
- * frequencyCheck：频控 / 冷却检查（4.2 Call Function，决策咨询）。
- * 自原有同名工具收编：只读返回发送总量与冷却键；真正拦截在 SendTouchAction 管线（H）。
+ * frequencyCheck：频控检查（4.2 Call Function，决策咨询）。
+ * 自原有同名工具收编：只读返回发送总量（频道级频控 max_per_day 参考）；
+ * 拦截在 SendTouchAction 管线（H）。
  */
 @Component
 public class FrequencyCheckFunction implements Function {
@@ -27,7 +28,7 @@ public class FrequencyCheckFunction implements Function {
 
     @Override
     public String description() {
-        return "频控检查：返回客户在指定通道的历史发送总量与冷却状态键（决策咨询，拦截在 Action）";
+        return "频控检查：返回客户在指定通道的历史发送总量（决策咨询，拦截在 Action）";
     }
 
     @Override
@@ -46,7 +47,6 @@ public class FrequencyCheckFunction implements Function {
                 .eq(DeliveryEntity.COL_CUSTOMER_ID, cid)
                 .eq(DeliveryEntity.COL_CHANNEL, channel));
         return Map.of("customer_id", cid, "channel", channel,
-                "sent_total", sentTotal == null ? 0L : sentTotal,
-                "cooling_key", "ea:cd:" + tenantId + ":" + cid);
+                "sent_total", sentTotal == null ? 0L : sentTotal);
     }
 }

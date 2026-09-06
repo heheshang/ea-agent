@@ -27,7 +27,7 @@ import java.util.Map;
 
 /**
  * EA-Bus 事件消费（详细设计 10.3）：XREADGROUP ea:consumer 轮询 ea:events，
- * 匹配 RUNNING 活动触发规则 → sendTouch（冷却/灰度/AB 在 action 内）→ XACK；
+ * 匹配 RUNNING 活动触发规则 → sendTouch → XACK；
  * 失败写 ea:events:dlq 后 XACK，事件不丢失（已落库，总线补偿后续迭代）。
  */
 @Component
@@ -95,7 +95,6 @@ public class EventConsumer {
                 Map<String, Object> rule = c.getTriggerRule() == null ? Map.of() : c.getTriggerRule();
                 if (eventType.equals(rule.get("event_type"))) {
                     matched++;
-                    String cooldown = String.valueOf(rule.getOrDefault("cooldown", "PT1H"));
                     ActionContext ctx = ActionContext.of(tenantId, null, Actors.SYSTEM, "evt:" + recordId);
                     Map<String, Object> payload = toStringKeyMap(f);
                     String nested = payload.get("event_payload") == null ? null : String.valueOf(payload.get("event_payload"));
@@ -109,7 +108,6 @@ public class EventConsumer {
                     }
                     ActionRequest req = ActionRequest.of(Map.of(
                             "campaign_id", c.getId(),
-                            "cooldown", cooldown,
                             "event_type", eventType,
                             "event_payload", payload));
                     actionRegistry.get("sendTouch").execute(ctx, req);

@@ -55,9 +55,6 @@ public final class TypeRegistry {
                         FieldDef.q("channel", FieldType.ENUM),
                         FieldDef.q("schedule", FieldType.DATETIME),
                         FieldDef.q("cron", FieldType.STRING),
-                        FieldDef.q("gray_ratio", FieldType.NUMBER),
-                        FieldDef.q("ab_mode", FieldType.ENUM),
-                        FieldDef.q("ab_split", FieldType.NUMBER),
                         FieldDef.q("owner_id", FieldType.NUMBER),
                         FieldDef.q("created_at", FieldType.DATETIME))));
         register(new ObjectTypeDef("template", TemplateEntity.class,
@@ -84,7 +81,6 @@ public final class TypeRegistry {
                         FieldDef.q("customer_id", FieldType.NUMBER),
                         FieldDef.q("channel", FieldType.ENUM),
                         FieldDef.q("status", FieldType.ENUM),
-                        FieldDef.q("gray_hit", FieldType.BOOLEAN),
                         FieldDef.q("request_id", FieldType.STRING),
                         FieldDef.q("created_at", FieldType.DATETIME))));
         register(new ObjectTypeDef("event", EventEntity.class,

@@ -8,7 +8,6 @@ import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.IdempotencyService;
 import com.eaagent.common.Texts;
-import com.eaagent.common.TriggerRuleCodec;
 import com.eaagent.ontology.action.AbstractAction;
 import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionMeta;
@@ -24,14 +23,11 @@ import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.DeliveryEntity;
 import com.eaagent.ontology.model.TemplateEntity;
 import com.eaagent.ontology.model.UnsubscribeEntity;
-import com.eaagent.ontology.service.AbBucketer;
 import com.eaagent.ontology.service.AudienceSnapshotService;
-import com.eaagent.ontology.service.CooldownService;
 import com.eaagent.ontology.service.TemplateRoutingService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -39,8 +35,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * sendTouch（10.4）：组合式发送管线 —— 人群派生 → 逐客户：退订检查 → 冷却窗 → 灰度/AB
- * 分桶 → delivery 落库（request_id 幂等）→ 通道发送（console 降级）。单客户失败不阻断整体，
+ * sendTouch（10.4）：组合式发送管线 —— 人群派生 → 逐客户：退订检查 →
+ * delivery 落库（request_id 幂等）→ 通道发送（console 降级）。单客户失败不阻断整体，
  * 统计计入 skipped；发送异常抛 E-14003 由调用方（EventConsumer）裁决。
  */
 @Component
@@ -52,8 +48,6 @@ public class SendTouchAction extends AbstractAction {
     private final DeliveryMapper deliveryMapper;
     private final UnsubscribeMapper unsubscribeMapper;
     private final AudienceSnapshotService snapshotService;
-    private final CooldownService cooldownService;
-    private final AbBucketer abBucketer;
     private final ChannelAdapterRegistry channelRegistry;
     private final TemplateRoutingService templateRoutingService;
 
@@ -61,8 +55,8 @@ public class SendTouchAction extends AbstractAction {
                            StringRedisTemplate redis, CampaignMapper campaignMapper,
                            TemplateMapper templateMapper, CustomerMapper customerMapper,
                            DeliveryMapper deliveryMapper, UnsubscribeMapper unsubscribeMapper,
-                           AudienceSnapshotService snapshotService, CooldownService cooldownService,
-                           AbBucketer abBucketer, ChannelAdapterRegistry channelRegistry,
+                           AudienceSnapshotService snapshotService,
+                           ChannelAdapterRegistry channelRegistry,
                            TemplateRoutingService templateRoutingService) {
         super(actionLogMapper, idempotencyService, redis);
         this.campaignMapper = campaignMapper;
@@ -71,8 +65,6 @@ public class SendTouchAction extends AbstractAction {
         this.deliveryMapper = deliveryMapper;
         this.unsubscribeMapper = unsubscribeMapper;
         this.snapshotService = snapshotService;
-        this.cooldownService = cooldownService;
-        this.abBucketer = abBucketer;
         this.channelRegistry = channelRegistry;
         this.templateRoutingService = templateRoutingService;
     }
@@ -81,7 +73,7 @@ public class SendTouchAction extends AbstractAction {
     public ActionMeta meta() {
         return ActionMeta.builder()
                 .name("sendTouch")
-                .description("按人群执行触达发送（退订/冷却/灰度/AB 全检查）")
+                .description("按人群执行触达发送（退订检查）")
                 .requiredArgs(List.of("campaign_id"))
                 .permissions(List.of())
                 .build();
@@ -103,47 +95,17 @@ public class SendTouchAction extends AbstractAction {
         ChannelAdapter adapter = channelRegistry.get(campaign.getChannel());
         adapter.validate(tenantId, Map.of());
 
-        Duration cooldown = null;
-        String cooldownRaw = req.getString("cooldown");
-        if (cooldownRaw != null && !cooldownRaw.isBlank()) {
-            cooldown = TriggerRuleCodec.parseLooseDuration(cooldownRaw);
-        } else if (campaign.getTriggerRule() != null && campaign.getTriggerRule().get("cooldown") != null) {
-            cooldown = TriggerRuleCodec.parseLooseDuration(String.valueOf(campaign.getTriggerRule().get("cooldown")));
-        }
-        if (cooldown == null) {
-            cooldown = Duration.ofHours(1);
-        }
-
         List<CustomerEntity> customers = memberIds.isEmpty() ? List.of()
                 : customerMapper.selectList(new QueryWrapper<CustomerEntity>()
                         .eq(CustomerEntity.COL_TENANT_ID, tenantId).in(CustomerEntity.COL_ID, memberIds));
-        int sent = 0, unsubscribed = 0, cooling = 0, graySkipped = 0, failed = 0;
+        int sent = 0, unsubscribed = 0, failed = 0;
         for (CustomerEntity c : customers) {
             // 1. 退订检查
             if (isUnsubscribed(tenantId, c, campaign.getChannel())) {
                 unsubscribed++;
                 continue;
             }
-            // 2. 冷却窗（trigger 场景：事件去重窗口）
-            if (!cooldownService.tryEnter(tenantId, campaign.getId(), c.getId(), cooldown)) {
-                cooling++;
-                continue;
-            }
-            // 3. 灰度 + AB 分桶
-            int bucket = abBucketer.bucket(tenantId, campaign.getId(), c.getId());
-            boolean grayHit = bucket < (campaign.getGrayRatio() == null ? 100 : campaign.getGrayRatio());
-            if (!grayHit) {
-                graySkipped++;
-                continue;
-            }
-            String abGroup = null;
-            if (CampaignEntity.AB_MODE_AB.equals(campaign.getAbMode())) {
-                int split = campaign.getAbSplit() == null ? 0 : campaign.getAbSplit();
-                int variantIdx = abBucketer.variant(bucket, campaign.getAbVariants(), split);
-                abGroup = variantIdx < 0 ? "CONTROL"
-                        : "TREATMENT_" + (char) ('A' + variantIdx);
-            }
-            // 4. delivery 落库（request_id 幂等）
+            // 2. delivery 落库（request_id 幂等）
             TemplateEntity tpl = templateRoutingService.resolve(campaign, eventType, eventPayload, c, tplCache);
             DeliveryEntity d = new DeliveryEntity();
             d.setRequestId(UUID.randomUUID().toString());
@@ -152,19 +114,17 @@ public class SendTouchAction extends AbstractAction {
             d.setCustomerId(c.getId());
             d.setChannel(campaign.getChannel());
             d.setTemplateId(tpl.getId());
-            d.setGrayHit(grayHit);
-            d.setAbGroup(abGroup);
             d.setStatus(DeliveryEntity.STATUS_PENDING);
             d.setAttempt(0);
             d.setCreatedAt(Instant.now());
             d.setUpdatedAt(Instant.now());
             deliveryMapper.insert(d);
-            // 5. 通道发送（console 降级：回写 SENT）
+            // 3. 通道发送（console 降级：回写 SENT）
             String to = pickContact(c, campaign.getChannel());
             String content = render(tpl.getContent(), tpl.getVars(), c, eventPayload);
             try {
                 adapter.send(new DeliveryMessage(d.getId(), tenantId, c.getId(), campaign.getChannel(),
-                        to, content, abGroup));
+                        to, content));
                 sent++;
             } catch (Exception e) {
                 failed++;
@@ -180,8 +140,6 @@ public class SendTouchAction extends AbstractAction {
         out.put("total_customers", customers.size());
         out.put("sent", sent);
         out.put("skipped_unsubscribed", unsubscribed);
-        out.put("skipped_cooldown", cooling);
-        out.put("skipped_gray", graySkipped);
         out.put("failed", failed);
         return out;
     }

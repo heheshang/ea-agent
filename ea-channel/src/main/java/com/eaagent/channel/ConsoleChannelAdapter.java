@@ -46,9 +46,9 @@ public class ConsoleChannelAdapter implements ChannelAdapter {
     @Override
     public String send(DeliveryMessage message) {
         validate(message.tenantId(), Map.of());
-        log.info("[CONSOLE_CHANNEL] deliveryId={} tenantId={} customerId={} channel={} to={} abGroup={} content={}",
+        log.info("[CONSOLE_CHANNEL] deliveryId={} tenantId={} customerId={} channel={} to={} content={}",
                 message.deliveryId(), message.tenantId(), message.customerId(), message.channel(),
-                message.to(), message.abGroup(), message.templateContent());
+                message.to(), message.templateContent());
         DeliveryEntity d = deliveryMapper.selectOne(new QueryWrapper<DeliveryEntity>()
                 .eq(DeliveryEntity.COL_ID, message.deliveryId()).eq(DeliveryEntity.COL_TENANT_ID, message.tenantId()));
         if (d == null) {

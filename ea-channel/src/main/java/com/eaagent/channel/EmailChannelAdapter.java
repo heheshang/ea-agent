@@ -172,9 +172,9 @@ public class EmailChannelAdapter implements ChannelAdapter {
         if (!consoleEnabled) {
             throw new BizException(ErrorCode.CHANNEL_NOT_CONFIGURED);
         }
-        log.info("[CONSOLE_CHANNEL] deliveryId={} tenantId={} customerId={} channel={} to={} abGroup={} content={}",
+        log.info("[CONSOLE_CHANNEL] deliveryId={} tenantId={} customerId={} channel={} to={} content={}",
                 message.deliveryId(), message.tenantId(), message.customerId(), message.channel(),
-                message.to(), message.abGroup(), message.templateContent());
+                message.to(), message.templateContent());
         markSent(message, String.valueOf(message.deliveryId()));
         return String.valueOf(message.deliveryId());
     }

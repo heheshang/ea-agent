@@ -41,7 +41,7 @@ class AgentToolRegistryTest {
     @Test
     void ruleWithoutEventTypeRejected() {
         assertNotNull(AgentToolRegistry.validateCreateCampaignRule(
-                "createCampaign", rule(Map.of("cooldown", "PT1H"))));
+                "createCampaign", rule(Map.of("window", "1d"))));
     }
 
     @Test
@@ -53,7 +53,7 @@ class AgentToolRegistryTest {
     @Test
     void ruleWithEventTypeAccepted() {
         assertNull(AgentToolRegistry.validateCreateCampaignRule(
-                "createCampaign", rule(Map.of("event_type", "order_placed", "cooldown", "PT1H"))));
+                "createCampaign", rule(Map.of("event_type", "order_placed", "window", "1d"))));
     }
 
     @Test

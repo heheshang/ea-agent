@@ -8,11 +8,12 @@ import java.util.regex.Pattern;
 
 /**
  * 触发规则（campaign.trigger_rule jsonb）参数编解码：
- * 契约 {@code {"event_type":"order_placed","window":"1d","cooldown":"1h"}}
- * （详细设计 8.4 / 数据流 3.5）。cooldown/window 保存时归一为 ISO-8601 Duration
+ * 契约 {@code {"event_type":"order_placed","window":"1d"}}
+ * （详细设计 8.4 / 数据流 3.5）。window 保存时归一为 ISO-8601 Duration
  * （1h→PT1H、30m→PT30M、2d→PT48H、90s→PT1M30S、纯数字按秒），
  * 非法格式在保存路径即抛 BizException（E-13002），避免触发时 Duration.parse 500。
- * 消费侧（sendTouch 冷却窗）用 parseLooseDuration 兜底存量脏数据。
+ * cooldown 键随冷却期机制移除：normalize 直接丢弃，不再保留。
+ * 消费侧用 parseLooseDuration 兜底存量脏数据。
  */
 public final class TriggerRuleCodec {
 
@@ -59,7 +60,8 @@ public final class TriggerRuleCodec {
 
     /**
      * 归一触发规则：输出新 map（含未知键宽容保留）。
-     * event_type trim（空白移除、超 64 报错）；cooldown/window 宽松格式归一 ISO-8601，非法报错。
+     * event_type trim（空白移除、超 64 报错）；window 宽松格式归一 ISO-8601，非法报错。
+     * cooldown 键（机制移除）直接丢弃。
      */
     public static Map<String, Object> normalize(Map<String, Object> rule) {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -74,7 +76,7 @@ public final class TriggerRuleCodec {
             }
             String str = String.valueOf(val);
             if (str.isBlank()) {
-                continue;   // 空白值 = 移除该键（EventConsumer 对缺失 cooldown 有 PT1H 默认兜底）
+                continue;   // 空白值 = 移除该键
             }
             switch (key) {
                 case "event_type" -> {
@@ -85,7 +87,10 @@ public final class TriggerRuleCodec {
                     }
                     out.put(key, t);
                 }
-                case "cooldown", "window" -> {
+                case "cooldown" -> {
+                    // 冷却期机制已移除：键直接丢弃（存量由 V11 迁移清理）
+                }
+                case "window" -> {
                     try {
                         out.put(key, parseLooseDuration(str).toString());
                     } catch (IllegalArgumentException e) {

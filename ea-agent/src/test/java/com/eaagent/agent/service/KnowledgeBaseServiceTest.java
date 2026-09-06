@@ -109,8 +109,8 @@ class KnowledgeBaseServiceTest {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         when(mapper.searchSimilar(any(Long.class), anyString(), anyInt())).thenReturn(List.of(
                 row(1L, "触达退订规范", List.of("退订", "触达"), 0.4),  // 余弦 0.6 + 词命中 → 选中
-                row(3L, "灰度发布", List.of("灰度"), 0.2),            // 余弦 0.8 但无共同词 → 词校验剔除（哈希碰撞）
-                row(2L, "冷却窗与频控", List.of("冷却"), 0.95)));     // 余弦 0.05 → 低于阈值即截断
+                row(3L, "流失预警", List.of("流失"), 0.2),            // 余弦 0.8 但无共同词 → 词校验剔除（哈希碰撞）
+                row(2L, "频道频控", List.of("频控"), 0.95)));     // 余弦 0.05 → 低于阈值即截断
         List<KnowledgeBaseService.KnowledgeHit> hits = svc(mapper, 3).searchScored(1L, "触达退订", 3);
         assertEquals(List.of(1L), hits.stream().map(h -> h.entry().getId()).toList());
         assertEquals(0.6, hits.get(0).score());
