@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.eaagent.ontology.mapper.AgentScopeFileMapper;
 import com.eaagent.ontology.model.AgentScopeFileEntity;
+import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.filesystem.remote.store.StoreItem;
 import org.springframework.dao.DuplicateKeyException;
@@ -104,7 +105,7 @@ public class PgBaseStore implements BaseStore {
             uw.eq(AgentScopeFileEntity.COL_TENANT_ID, tenantId)
                     .eq(AgentScopeFileEntity.COL_NAMESPACE, ns)
                     .eq(AgentScopeFileEntity.COL_ITEM_KEY, key)
-                    .set(AgentScopeFileEntity.COL_VALUE, value)
+                    .set(AgentScopeFileEntity.COL_VALUE, JsonUtils.getJsonCodec().toJson(value))
                     .setSql(AgentScopeFileEntity.COL_VERSION + " = " + AgentScopeFileEntity.COL_VERSION + " + 1")
                     .set(AgentScopeFileEntity.COL_UPDATED_AT, Instant.now());
             mapper.update(null, uw);
@@ -118,7 +119,7 @@ public class PgBaseStore implements BaseStore {
                 uw.eq(AgentScopeFileEntity.COL_TENANT_ID, tenantId)
                         .eq(AgentScopeFileEntity.COL_NAMESPACE, ns)
                         .eq(AgentScopeFileEntity.COL_ITEM_KEY, key)
-                        .set(AgentScopeFileEntity.COL_VALUE, value)
+                        .set(AgentScopeFileEntity.COL_VALUE, JsonUtils.getJsonCodec().toJson(value))
                         .setSql(AgentScopeFileEntity.COL_VERSION + " = " + AgentScopeFileEntity.COL_VERSION + " + 1")
                         .set(AgentScopeFileEntity.COL_UPDATED_AT, Instant.now());
                 mapper.update(null, uw);
@@ -148,7 +149,7 @@ public class PgBaseStore implements BaseStore {
                 .eq(AgentScopeFileEntity.COL_NAMESPACE, ns)
                 .eq(AgentScopeFileEntity.COL_ITEM_KEY, key)
                 .eq(AgentScopeFileEntity.COL_VERSION, expectedVersion)
-                .set(AgentScopeFileEntity.COL_VALUE, value)
+                .set(AgentScopeFileEntity.COL_VALUE, JsonUtils.getJsonCodec().toJson(value))
                 .setSql(AgentScopeFileEntity.COL_VERSION + " = " + AgentScopeFileEntity.COL_VERSION + " + 1")
                 .set(AgentScopeFileEntity.COL_UPDATED_AT, Instant.now());
         return mapper.update(null, uw) == 1;

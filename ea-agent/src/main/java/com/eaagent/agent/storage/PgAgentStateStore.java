@@ -65,6 +65,22 @@ public class PgAgentStateStore implements AgentStateStore {
         return parseTenantId(userId);
     }
 
+    /**
+     * 读路径租户解析：userId 无法解析出有效租户（null/空白/非 tenant-{id} 格式）时返回 null
+     * （匿名槽，agentscope 内部 slotKey 用 __anon__），而非抛错。仅供 get/getList/exists/
+     * listSessionIds 等读路径用；写路径必须用 {@link #tenant(String)} 严格解析，防止无主/跨租户写入。
+     */
+    private static Long tenantOrNull(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            return PgAgentStateStore.parseTenantId(userId);
+        } catch (IllegalArgumentException badTenant) {
+            return null;
+        }
+    }
+
     @Override
     @Transactional
     public void save(String userId, String sessionId, String key, State value) {
@@ -124,8 +140,12 @@ public class PgAgentStateStore implements AgentStateStore {
 
     @Override
     public boolean exists(String userId, String sessionId) {
+        Long tenantId = tenantOrNull(userId);
+        if (tenantId == null) {
+            return false; // 匿名槽无租户数据
+        }
         return mapper.selectCount(new QueryWrapper<AgentScopeStateEntity>()
-                .eq(AgentScopeStateEntity.COL_TENANT_ID, tenant(userId))
+                .eq(AgentScopeStateEntity.COL_TENANT_ID, tenantId)
                 .eq(AgentScopeStateEntity.COL_USER_ID, userId)
                 .eq(AgentScopeStateEntity.COL_SESSION_ID, sessionId)) > 0;
     }
@@ -151,16 +171,27 @@ public class PgAgentStateStore implements AgentStateStore {
 
     @Override
     public Set<String> listSessionIds(String userId) {
+        Long tenantId = tenantOrNull(userId);
+        if (tenantId == null) {
+            return Set.of(); // 匿名槽无租户数据
+        }
         return mapper.selectList(new QueryWrapper<AgentScopeStateEntity>()
                         .select(AgentScopeStateEntity.COL_SESSION_ID)
-                        .eq(AgentScopeStateEntity.COL_TENANT_ID, tenant(userId))
+                        .eq(AgentScopeStateEntity.COL_TENANT_ID, tenantId)
                         .eq(AgentScopeStateEntity.COL_USER_ID, userId))
                 .stream().map(AgentScopeStateEntity::getSessionId).collect(Collectors.toSet());
     }
 
     private AgentScopeStateEntity row(String userId, String sessionId, String key) {
+        Long tenantId = tenantOrNull(userId);
+        // 匿名槽（userId=null/空白，agentscope 内部 slotKey 用 __anon__）：读不到任何租户数据，
+        // 返回空而非抛错——loadOrCreateAgentStateForSlot 等调用以 try/catch 兜底回退 fresh state，
+        // 读空不会串租户。写路径（save/delete）仍 fail-loud，见 {@link #tenant(String)}。
+        if (tenantId == null) {
+            return null;
+        }
         return mapper.selectOne(new QueryWrapper<AgentScopeStateEntity>()
-                .eq(AgentScopeStateEntity.COL_TENANT_ID, tenant(userId))
+                .eq(AgentScopeStateEntity.COL_TENANT_ID, tenantId)
                 .eq(AgentScopeStateEntity.COL_USER_ID, userId)
                 .eq(AgentScopeStateEntity.COL_SESSION_ID, sessionId)
                 .eq(AgentScopeStateEntity.COL_STATE_KEY, key));
@@ -177,7 +208,10 @@ public class PgAgentStateStore implements AgentStateStore {
                     .eq(AgentScopeStateEntity.COL_SESSION_ID, e.getSessionId())
                     .eq(AgentScopeStateEntity.COL_STATE_KEY, e.getStateKey())
                     .set(AgentScopeStateEntity.COL_SLOT_KIND, e.getSlotKind())
-                    .set(AgentScopeStateEntity.COL_CONTENT, e.getContent())
+                    // content 是 jsonb：UpdateWrapper.set 不走实体 JacksonTypeHandler，Map 会被
+                    // ObjectTypeHandler.setMap 按 PG hstore 绑定（无 hstore 扩展即抛
+                    // "No hstore extension installed"）。序列化为 JSON 字符串，PG jsonb 列自动 cast。
+                    .set(AgentScopeStateEntity.COL_CONTENT, JsonUtils.getJsonCodec().toJson(e.getContent()))
                     .set(AgentScopeStateEntity.COL_UPDATED_AT, Instant.now());
             mapper.update(null, uw);
         }
