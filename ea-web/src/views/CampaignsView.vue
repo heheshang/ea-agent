@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { get, post, put } from '../api/http'
-import type { Row } from '../api/types'
+import type { PageResult, Row } from '../api/types'
 
 const STATUSES = ['DRAFT', 'SCHEDULED', 'RUNNING', 'PAUSED', 'FINISHED', 'FAILED']
 const CHANNEL_LABELS: Record<string, string> = {
@@ -23,15 +23,59 @@ const dialogVisible = ref(false)
 const saving = ref(false)
 const isEdit = ref(false)
 
+/** 投递查看弹窗（触发人员 / 投递日志，共用同一分页数据源）。 */
+const deliveryVisible = ref(false)
+const deliveryCampaign = ref<Row | null>(null)
+const deliveryTab = ref('people')
+const deliveryRows = ref<Row[]>([])
+const deliveryTotal = ref(0)
+const deliveryPage = ref(1)
+const deliveryPageSize = 20
+const deliveryLoading = ref(false)
+
+/** base64url 无 padding（后端 PageToken 契约），offset = (page-1)*size。 */
+function encodeOffset(offset: number): string {
+  return btoa(String(offset)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function openDeliveries(row: Row) {
+  deliveryCampaign.value = row
+  deliveryTab.value = 'people'
+  deliveryPage.value = 1
+  deliveryVisible.value = true
+  loadDeliveries(1)
+}
+
+async function loadDeliveries(page: number) {
+  if (!deliveryCampaign.value) return
+  deliveryLoading.value = true
+  try {
+    const offset = (page - 1) * deliveryPageSize
+    const params: Record<string, string | number> = { limit: deliveryPageSize }
+    if (offset > 0) params.pageToken = encodeOffset(offset)
+    const p = await get<PageResult<Row>>(`/campaigns/${deliveryCampaign.value.id}/deliveries`, params)
+    deliveryRows.value = p.items ?? []
+    deliveryTotal.value = p.total ?? 0
+    deliveryPage.value = page
+  } finally {
+    deliveryLoading.value = false
+  }
+}
+
+function fmtTime(v?: unknown): string {
+  return v == null ? '-' : String(v)
+}
+
 function channelLabel(code?: unknown) {
   return CHANNEL_LABELS[String(code ?? '')] ?? String(code ?? '-')
 }
 
 /** 目标人群展示：audience_snapshot {audience_name, member_count, snapshot_at}；未快照的存量活动显示 '-'。 */
-function fmtAudienceSnapshot(snap?: Row | null) {
-  if (!snap) return '-'
-  const name = String(snap.audience_name ?? snap.name ?? '')
-  const count = snap.member_count ?? 0
+function fmtAudienceSnapshot(snap?: unknown) {
+  if (!snap || typeof snap !== 'object') return '-'
+  const s = snap as Row
+  const name = String(s.audience_name ?? s.name ?? '')
+  const count = s.member_count ?? 0
   return `${name}（${count} 人）`
 }
 
@@ -293,10 +337,11 @@ onMounted(load)
           <span>{{ fmtAudienceSnapshot(row.audience_snapshot) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="370" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="trigger(row)">触发</el-button>
           <el-button size="small" type="warning" @click="pause(row)">暂停</el-button>
+          <el-button size="small" @click="openDeliveries(row)">查看</el-button>
           <el-button size="small" @click="abReport(row)">AB</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
         </template>
@@ -318,6 +363,7 @@ onMounted(load)
             </div>
             <div class="board-card-actions">
               <el-button size="small" type="primary" @click="trigger(row)">触发</el-button>
+              <el-button size="small" @click="openDeliveries(row)">查看</el-button>
               <el-button size="small" @click="openEdit(row)">编辑</el-button>
               <el-button size="small" type="warning" @click="pause(row)">暂停</el-button>
             </div>
@@ -326,6 +372,65 @@ onMounted(load)
       </div>
     </div>
   </el-card>
+
+  <el-dialog v-model="deliveryVisible" :title="`投递查看：${deliveryCampaign?.name ?? ''}`" width="960px" destroy-on-close>
+    <el-tabs v-model="deliveryTab">
+      <el-tab-pane label="触发人员" name="people">
+        <el-table v-loading="deliveryLoading" :data="deliveryRows" size="small" stripe>
+          <el-table-column prop="customer_id" label="客户 ID" width="90" />
+          <el-table-column prop="customer_external_id" label="外部 ID" width="120" show-overflow-tooltip />
+          <el-table-column prop="customer_name" label="姓名" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.customer_name == null || row.customer_name === '' ? '-' : row.customer_name }}</template>
+          </el-table-column>
+          <el-table-column prop="customer_phone" label="手机号" width="140">
+            <template #default="{ row }">{{ row.customer_phone ?? '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="customer_email" label="邮箱" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.customer_email ?? '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="customer_status" label="客户状态" width="100">
+            <template #default="{ row }">{{ row.customer_status ?? '-' }}</template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+      <el-tab-pane label="投递日志" name="log">
+        <el-table v-loading="deliveryLoading" :data="deliveryRows" size="small" stripe>
+          <el-table-column prop="id" label="投递 ID" width="90" />
+          <el-table-column prop="customer_id" label="客户 ID" width="90" />
+          <el-table-column prop="channel" label="通道" width="80" />
+          <el-table-column prop="status" label="状态" width="100" />
+          <el-table-column prop="attempt" label="尝试" width="70" />
+          <el-table-column prop="gray_hit" label="灰度" width="70">
+            <template #default="{ row }">{{ row.gray_hit == null || row.gray_hit === false ? '否' : '是' }}</template>
+          </el-table-column>
+          <el-table-column prop="ab_group" label="AB 组" width="80">
+            <template #default="{ row }">{{ row.ab_group ?? '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="error" label="错误" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.error ?? '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="created_at" label="创建时间" width="180">
+            <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="updated_at" label="更新时间" width="180">
+            <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+    </el-tabs>
+    <div style="display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 12px">
+      <span style="color: #909399; font-size: 13px">共 {{ deliveryTotal }} 条（按触发时间倒序）</span>
+      <el-pagination
+        small
+        background
+        layout="prev, pager, next"
+        :total="deliveryTotal"
+        :current-page="deliveryPage"
+        :page-size="deliveryPageSize"
+        @current-change="loadDeliveries"
+      />
+    </div>
+  </el-dialog>
 
   <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑活动' : '新建活动'" width="640px" destroy-on-close>
     <el-form label-width="110px">

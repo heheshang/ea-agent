@@ -1,17 +1,13 @@
 package com.eaagent.app.web;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.api.dto.CampaignWriteRequest;
-import com.eaagent.common.BizException;
-import com.eaagent.common.ErrorCode;
+import com.eaagent.app.service.CampaignDeliveryService;
 import com.eaagent.common.PageResult;
 import com.eaagent.common.Result;
 import com.eaagent.common.TenantContext;
 import com.eaagent.ontology.action.ActionContext;
 import com.eaagent.ontology.action.ActionRegistry;
 import com.eaagent.ontology.action.ActionRequest;
-import com.eaagent.ontology.mapper.DeliveryMapper;
-import com.eaagent.ontology.model.DeliveryEntity;
 import com.eaagent.ontology.service.ObjectApiService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,8 +22,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 活动（campaign）：查询走统一对象 API；写操作经 Action 框架
- * （createCampaign / updateCampaign / pauseCampaign / sendTouch，权限矩阵见详细设计 9.2）。
+ * 活动（campaign）：查询走统一对象 API，投递日志/AB 聚合经 CampaignDeliveryService；
+ * 写操作经 Action 框架（createCampaign / updateCampaign / pauseCampaign / sendTouch，
+ * 权限矩阵见详细设计 9.2）。Controller 不直调 mapper。
  */
 @RestController
 @RequestMapping("/api/campaigns")
@@ -35,13 +32,13 @@ public class CampaignController {
 
     private final ObjectApiService objectApi;
     private final ActionRegistry actionRegistry;
-    private final DeliveryMapper deliveryMapper;
+    private final CampaignDeliveryService deliveryService;
 
     public CampaignController(ObjectApiService objectApi, ActionRegistry actionRegistry,
-                              DeliveryMapper deliveryMapper) {
+                              CampaignDeliveryService deliveryService) {
         this.objectApi = objectApi;
         this.actionRegistry = actionRegistry;
-        this.deliveryMapper = deliveryMapper;
+        this.deliveryService = deliveryService;
     }
 
     @GetMapping
@@ -112,18 +109,21 @@ public class CampaignController {
 
     @GetMapping("/{id}/ab-report")
     public Result<Map<String, Object>> abReport(@PathVariable Long id) {
-        long tenantId = TenantContext.requiredTenantId();
-        Map<String, Object> byGroup = new LinkedHashMap<>();
-        java.util.List<Map<String, Object>> rows = deliveryMapper.selectMaps(new QueryWrapper<DeliveryEntity>()
-                .select(DeliveryEntity.COL_AB_GROUP, DeliveryEntity.COL_STATUS, "count(*) as cnt")
-                .eq(DeliveryEntity.COL_TENANT_ID, tenantId)
-                .eq(DeliveryEntity.COL_CAMPAIGN_ID, id)
-                .isNotNull(DeliveryEntity.COL_AB_GROUP)
-                .groupBy(DeliveryEntity.COL_AB_GROUP, DeliveryEntity.COL_STATUS));
-        for (Map<String, Object> r : rows) {
-            byGroup.merge(String.valueOf(r.get("ab_group")), r, (a, b) -> a);
-        }
-        return Result.ok(Map.of("campaign_id", id, "rows", rows, "by_group", byGroup));
+        return Result.ok(deliveryService.abReport(TenantContext.requiredTenantId(), id));
+    }
+
+    /**
+     * GET /api/campaigns/{id}/deliveries：活动投递日志（触发人员列表 + 投递明细）。游标分页
+     * （PageToken，offset 语义同对象 API）+ 富化客户联系信息（phone/email 掩码、external_id、
+     * attributes.name）；租户隔离，倒序稳定排序（created_at, id）。
+     */
+    @GetMapping("/{id}/deliveries")
+    public Result<PageResult<Map<String, Object>>> deliveries(
+            @PathVariable Long id,
+            @RequestParam(required = false) String pageToken,
+            @RequestParam(required = false) Integer limit) {
+        return Result.ok(deliveryService.pageDeliveries(
+                TenantContext.requiredTenantId(), id, pageToken, limit));
     }
 
     private ActionContext actionCtx(String requestId) {
