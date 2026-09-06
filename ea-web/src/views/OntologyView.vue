@@ -270,7 +270,7 @@ function jumpTo(node: OntologyNode) {
   else if (node.id === 'obj:campaign') router.push('/campaigns')
 }
 
-/** —— 调用链回放（/agent/stats/run-trace → 流程图高亮动效）—— */
+/** —— 调用链回放（/agent/stats/run-trace → 流程图高亮动效；/agent/stats/campaign-trace → 运营活动动作史回放）—— */
 interface TraceCall {
   seq: number
   kind: string
@@ -290,6 +290,29 @@ interface RunItem {
 const runs = ref<RunItem[]>([])
 const runsLoading = ref(false)
 const runId = ref<number | null>(null)
+/** 回放目标：run（单次 run 调用链）| campaign（运营活动动作史） */
+const traceTarget = ref<'run' | 'campaign'>('run')
+interface CampaignItem {
+  id: number
+  name: string
+  status?: string
+  channel?: string
+  created_at?: string
+}
+interface CampaignEvent {
+  seq: number
+  action: string
+  request_id?: string
+  actor_type?: string
+  actor_id?: string
+  args?: Record<string, unknown> | null
+  result?: Record<string, unknown> | null
+  created_at?: string
+}
+const campaigns = ref<CampaignItem[]>([])
+const campaignsLoading = ref(false)
+const campaignId = ref<number | null>(null)
+const campaignInfo = ref<CampaignItem | null>(null)
 const trace = ref<TraceCall[]>([])
 /** 当前播放步（-1 = 未开始；0 起每步推进） */
 const step = ref(-1)
@@ -330,6 +353,21 @@ function runLabel(r: RunItem): string {
   return `#${r.id} · ${runTime(r)} · ${brief}`
 }
 
+/** 运营活动下拉：`#id · 时间 · 名称 · 状态`（名称超长截断） */
+function campaignLabel(c: CampaignItem): string {
+  const brief = (c.name ?? '').length > 22 ? c.name.slice(0, 22) + '…' : c.name
+  return `#${c.id} · ${runTime({ createdAt: c.created_at } as RunItem)} · ${brief}${c.status ? ` · ${c.status}` : ''}`
+}
+
+async function loadCampaigns() {
+  campaignsLoading.value = true
+  try {
+    campaigns.value = (await get<PageResult<CampaignItem>>('/campaigns', { limit: 50 }))?.items ?? []
+  } finally {
+    campaignsLoading.value = false
+  }
+}
+
 async function onRunChange(id: number) {
   playing.value = false
   step.value = -1
@@ -350,6 +388,34 @@ async function onRunChange(id: number) {
     playing.value = true
     // 运行中已有部分调用：轮询续载增长（不打断播放）
     if (isRunning(runStatus.value)) startPoll(id)
+  } catch {
+    trace.value = []
+  }
+}
+
+/** 运营活动动作史回放：action_log 事件（创建/触达/更新/暂停…）映射为流程图 step，复用播放管线。 */
+async function onCampaignChange(id: number) {
+  playing.value = false
+  step.value = -1
+  trace.value = []
+  campaignInfo.value = null
+  stopPoll()
+  if (!id) return
+  try {
+    const res = await get<{ campaign: CampaignItem; trace: CampaignEvent[] }>('/agent/stats/campaign-trace', { campaign_id: id })
+    campaignInfo.value = res?.campaign ?? null
+    trace.value = (res?.trace ?? []).map((e) => ({
+      seq: e.seq,
+      kind: 'action-event',
+      name: e.action,
+      target: e.action,
+      args: e.args ? JSON.stringify(e.args) : null,
+      ok: true,
+    }))
+    if (trace.value.length) {
+      step.value = 0
+      playing.value = true
+    }
   } catch {
     trace.value = []
   }
@@ -388,17 +454,24 @@ function stopPoll() {
   }
 }
 
-/** 单步调用的节点 id 集合（知识库检索步 → 知识库节点；工具步 → 工具 + 动作/函数目标） */
+/** 单步调用的节点 id 集合（知识库检索步 → 知识库节点；工具步 → 工具 + 动作/函数目标；活动动作史步 → 动作节点） */
 function stepNodes(c: TraceCall): string[] {
   if (c.kind === 'kb') return ['kb']
+  if (c.kind === 'action-event') return c.target ? [`action:${c.target}`] : []
   const ids = [`tool:${c.name}`]
   if (c.target) ids.push(`${c.kind}:${c.target}`)
   return ids
 }
 
-/** 单步调用的边（engine→kb / engine→tool、tool→action/function，动作/函数→对象静态边存在则一并点亮） */
+/** 单步调用的边（engine→kb / engine→tool、tool→action/function；动作/函数→对象静态边存在则一并点亮；活动动作史：动作→对象静态边点亮） */
 function stepEdges(c: TraceCall): [string, string][] {
   if (c.kind === 'kb') return [['engine', 'kb']]
+  if (c.kind === 'action-event') {
+    if (!c.target) return []
+    const t = `action:${c.target}`
+    const oe = data.value?.edges.find((x) => x.from === t && x.to.startsWith('obj:'))
+    return oe ? [[t, oe.to]] : []
+  }
   const es: [string, string][] = [['engine', `tool:${c.name}`]]
   if (c.target) {
     const t = `${c.kind}:${c.target}`
@@ -472,6 +545,7 @@ onBeforeUnmount(() => {
 onMounted(() => {
   load()
   loadRuns()
+  loadCampaigns()
 })
 </script>
 
@@ -496,11 +570,16 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 调用链回放：选一次 run，逐步点亮真实调用链路（engine → 工具 → Action/Function → 对象） -->
+    <!-- 调用链回放：选一次 run（引擎 → 工具 → Action/Function → 对象）或一个运营活动（动作史逐步点亮），复用播放管线 -->
     <el-card v-if="data" shadow="never" class="trace-card">
-      <template #header><span class="overview-title">调用链回放</span></template>
+      <template #header><span class="overview-title">调用链回放 · 运营活动</span></template>
       <div class="trace-bar">
+        <el-radio-group v-model="traceTarget" size="small">
+          <el-radio-button value="run">Run 调用链</el-radio-button>
+          <el-radio-button value="campaign">运营活动</el-radio-button>
+        </el-radio-group>
         <el-select
+          v-if="traceTarget === 'run'"
           v-model="runId"
           placeholder="选择一次 run 回放"
           style="width: 360px"
@@ -510,6 +589,20 @@ onMounted(() => {
         >
           <el-option v-for="r in runs" :key="r.id" :value="r.id" :label="runLabel(r)" />
         </el-select>
+        <el-select
+          v-else
+          v-model="campaignId"
+          placeholder="选择运营活动回放"
+          style="width: 360px"
+          :loading="campaignsLoading"
+          filterable
+          @change="onCampaignChange"
+        >
+          <el-option v-for="c in campaigns" :key="c.id" :value="c.id" :label="campaignLabel(c)" />
+        </el-select>
+        <span v-if="campaignInfo && traceTarget === 'campaign'" class="step-live">
+          活动 #{{ campaignInfo.id }} · {{ campaignInfo.name }}{{ campaignInfo.status ? `（${campaignInfo.status}）` : '' }}
+        </span>
         <el-button-group>
           <el-button :disabled="!trace.length" title="重置" @click="resetTrace">⏮</el-button>
           <el-button
@@ -521,7 +614,7 @@ onMounted(() => {
         <span v-if="trace.length" class="step-text">
           第 {{ step < 0 ? 0 : Math.min(step + 1, trace.length) }} / {{ trace.length }} 步
           <template v-if="step >= 0 && step < trace.length">
-            · <b>{{ trace[step].kind === 'kb' ? '知识库检索' : trace[step].name }}</b><template v-if="trace[step].target"> → {{ trace[step].target }}</template>
+            · <b>{{ trace[step].kind === 'kb' ? '知识库检索' : trace[step].name }}</b><template v-if="trace[step].target && trace[step].target !== trace[step].name"> → {{ trace[step].target }}</template>
             <span class="step-ms">{{ trace[step].duration_ms ?? '-' }}ms</span>
             <span v-if="trace[step].ok === false" class="step-fail">✗ 失败</span>
           </template>
@@ -531,10 +624,13 @@ onMounted(() => {
           <el-radio-button :value="2">×2</el-radio-button>
           <el-radio-button :value="4">×4</el-radio-button>
         </el-radio-group>
-        <span v-if="!trace.length && runId" class="trace-empty">
+        <span v-if="!trace.length && runId && traceTarget === 'run'" class="trace-empty">
           {{ isRunning(runStatus) ? '该 run 执行中：调用链实时更新，完成后可完整回放…' : '该 run 无工具调用明细（V5 迁移前的存量 run）' }}
         </span>
-        <span v-if="trace.length && isRunning(runStatus)" class="step-live">执行中 · 实时更新</span>
+        <span v-if="!trace.length && campaignId && traceTarget === 'campaign'" class="trace-empty">
+          该运营活动暂无已执行的 ontology 动作
+        </span>
+        <span v-if="trace.length && traceTarget === 'run' && isRunning(runStatus)" class="step-live">执行中 · 实时更新</span>
       </div>
     </el-card>
 

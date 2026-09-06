@@ -46,4 +46,10 @@ public class AgentStatsController {
     public Result<Map<String, Object>> runTrace(@RequestParam("run_id") long runId) {
         return Result.ok(agentStatsService.runTrace(TenantContext.requiredTenantId(), runId));
     }
+
+    /** 运营活动调用链回放：按 campaign 聚合 ontology action_log 动作事件（创建+触达/更新/暂停等），供流程图「调用链回放」动效。 */
+    @GetMapping("/campaign-trace")
+    public Result<Map<String, Object>> campaignTrace(@RequestParam("campaign_id") long campaignId) {
+        return Result.ok(agentStatsService.campaignTrace(TenantContext.requiredTenantId(), campaignId));
+    }
 }

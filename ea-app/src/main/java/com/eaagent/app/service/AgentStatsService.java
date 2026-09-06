@@ -3,10 +3,14 @@ package com.eaagent.app.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.common.Texts;
+import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.mapper.AgentToolCallMapper;
+import com.eaagent.ontology.mapper.CampaignMapper;
+import com.eaagent.ontology.model.ActionLogEntity;
 import com.eaagent.ontology.model.AgentRunEntity;
 import com.eaagent.ontology.model.AgentToolCallEntity;
+import com.eaagent.ontology.model.CampaignEntity;
 import com.eaagent.ontology.service.ObjectApiService;
 import com.eaagent.ontology.type.TypeRegistry;
 import org.springframework.stereotype.Service;
@@ -37,11 +41,17 @@ public class AgentStatsService {
 
     private final AgentRunMapper runMapper;
     private final AgentToolCallMapper toolCallMapper;
+    private final ActionLogMapper actionLogMapper;
+    private final CampaignMapper campaignMapper;
     private final ObjectApiService objectApi;
 
-    public AgentStatsService(AgentRunMapper runMapper, AgentToolCallMapper toolCallMapper, ObjectApiService objectApi) {
+    public AgentStatsService(AgentRunMapper runMapper, AgentToolCallMapper toolCallMapper,
+                             ActionLogMapper actionLogMapper, CampaignMapper campaignMapper,
+                             ObjectApiService objectApi) {
         this.runMapper = runMapper;
         this.toolCallMapper = toolCallMapper;
+        this.actionLogMapper = actionLogMapper;
+        this.campaignMapper = campaignMapper;
         this.objectApi = objectApi;
     }
 
@@ -441,6 +451,51 @@ public class AgentStatsService {
         runInfo.put("summary", run.getSummary());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("run", runInfo);
+        out.put("trace", trace);
+        return out;
+    }
+
+    /**
+     * 运营活动调用链回放（/api/agent/stats/campaign-trace）：给定运营活动（campaign），
+     * 聚合 ontology action_log 中该活动的全部动作事件（创建 createCampaign 经 result.campaign_id 关联，
+     * 后续 sendTouch/updateCampaign/pauseCampaign 等经 args.campaign_id 关联），按时间升序回放。
+     * 活动不存在 → 返回 null（兼容前端空态）。
+     */
+    public Map<String, Object> campaignTrace(long tenantId, long campaignId) {
+        CampaignEntity c = campaignMapper.selectOne(new QueryWrapper<CampaignEntity>()
+                .eq(CampaignEntity.COL_TENANT_ID, tenantId)
+                .eq(CampaignEntity.COL_ID, campaignId));
+        if (c == null) {
+            return null;
+        }
+        List<ActionLogEntity> logs = actionLogMapper.selectList(new QueryWrapper<ActionLogEntity>()
+                .eq(ActionLogEntity.COL_TENANT_ID, tenantId)
+                .and(w -> w.apply("(result->>'campaign_id') = {0}", String.valueOf(campaignId))
+                        .or().apply("(args->>'campaign_id') = {0}", String.valueOf(campaignId)))
+                .orderByAsc(ActionLogEntity.COL_CREATED_AT)
+                .orderByAsc(ActionLogEntity.COL_ID));
+        List<Map<String, Object>> trace = new ArrayList<>(logs.size());
+        int seq = 0;
+        for (ActionLogEntity e : logs) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("seq", ++seq);
+            m.put("action", e.getAction());
+            m.put("request_id", e.getRequestId());
+            m.put("actor_type", e.getActorType());
+            m.put("actor_id", e.getActorId());
+            m.put("args", e.getArgs());
+            m.put("result", e.getResult());
+            m.put("created_at", e.getCreatedAt());
+            trace.add(m);
+        }
+        Map<String, Object> campaign = new LinkedHashMap<>();
+        campaign.put("id", c.getId());
+        campaign.put("name", c.getName());
+        campaign.put("status", c.getStatus());
+        campaign.put("channel", c.getChannel());
+        campaign.put("created_at", c.getCreatedAt());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("campaign", campaign);
         out.put("trace", trace);
         return out;
     }
