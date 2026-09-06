@@ -231,7 +231,7 @@ flowchart LR
 - 会话状态机全程持久化：`agent_run`（4.3 八态）落库点为创建（NEW）、审批（AWAITING_APPROVAL）、完成/失败/取消；`plan`/`decisions` 全量可回放（9.4）。
 - 工具边界：LLM 只能经 ToolRegistry 白名单调用（9.6）；对象查询强制租户过滤 + `audience.owner_id` 归属校验（5.4，E-12002）；返回 LLM 的数据手机号/邮箱掩码（9.6 脱敏视图）。
 - 写操作唯一出口是 Action 管线：工具内的 `sendTouch` 等走链路 A 的完整校验，Agent 无绕过通道；高危动作经权限推断进审批（10.2 步骤 5）。
-- **会话审批门控（v1.6）**：web 对话在 POST /api/agent/chat 时携带 `mode`（auto 直接执行 / suggest 写动作挂起），落 `ea:agent:mode:{tenant}:{session}`（TTL 1d）；suggest 模式下 `applyAction` 对写动作（createTemplate/createCampaign/updateCampaign/createAudience/updateCustomerState/pauseCampaign/sendTouch，importEvents 除外）不入库执行，挂起到 Redis List `ea:agent:approval:pending`（entry 含 action/args/状态），返回 `PENDING_APPROVAL`；审批面板 GET /api/agent/approvals 列表、POST /api/agent/approvals/{id}/decision（REVIEWER 及以上）——批准以原请求身份执行动作，拒绝不执行。**createTemplate 产物即 APPROVED**（审批职责由会话门控承担，否则自动模式模板永久拒发）。
+- **会话审批门控（v1.6）**：web 对话在 POST /api/agent/chat 时携带 `mode`（auto 直接执行 / suggest 写动作挂起），落 `ea:agent:mode:{tenant}:{session}`（TTL 1d）；suggest 模式下 `applyAction` 对写动作（createTemplate/createCampaign/updateCampaign/createAudience/updateCustomerState/pauseCampaign/sendTouch，importEvents 除外）不入库执行，挂起到 Redis List `ea:agent:approval:pending`（entry 含 action/args/状态），返回 `PENDING_APPROVAL`；审批面板 GET /api/agent/approvals 列表、POST /api/agent/approvals/{id}/decision（REVIEWER 及以上）——批准以原请求身份执行动作，拒绝不执行。**createTemplate 产物即 PENDING**：进入模板人工审核流（DRAFT→PENDING→APPROVED|REJECTED），REVIEWER 审批通过后路由/发送才可用——会话门控只控制 `applyAction` 是否执行，不替代模板审核。
 - **createTemplate 工具（v1.6）**：`createCampaign` 校验 template_id 缺失或不存在即报可读错误（提示先调 createTemplate）；模板内容变量从 `{{...}}` 提取为 `vars` 返回，供活动编排与条件分支复用。
 - 与 EA-Bus 分离：SSE 传的是 Agent 会话事件（4.6 协议表），不回传业务事件流。
 

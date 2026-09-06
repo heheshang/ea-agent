@@ -7,8 +7,11 @@ import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.PageResult;
 import com.eaagent.common.Texts;
+import com.eaagent.ontology.mapper.KnowledgeLinkMapper;
 import com.eaagent.ontology.mapper.KnowledgeMapper;
 import com.eaagent.ontology.model.KnowledgeEntity;
+import com.eaagent.ontology.model.KnowledgeGraphResponse;
+import com.eaagent.ontology.model.KnowledgeLinkEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -63,6 +66,11 @@ public class KnowledgeBaseService {
     private static final Set<String> LIFECYCLES = Set.of(
             KnowledgeEntity.LIFE_ACTIVE, KnowledgeEntity.LIFE_SUPERSEDED, KnowledgeEntity.LIFE_OBSOLETE);
 
+    /** 图谱类型化关系白名单（V15；supersedes 由 knowledge.supersedes_id 表达，不在此表）。 */
+    private static final Set<String> LINK_TYPES = Set.of(
+            KnowledgeLinkEntity.REL_RELATED, KnowledgeLinkEntity.REL_SUPPORTS,
+            KnowledgeLinkEntity.REL_REFINES, KnowledgeLinkEntity.REL_CONFLICTS);
+
     /** 记录类别中文标签（注入上下文时标注，让模型识别约束/规则/事实的语义权重）。 */
     private static final Map<String, String> TYPE_LABELS = Map.ofEntries(
             Map.entry(KnowledgeEntity.TYPE_DECISION, "决策"),
@@ -74,12 +82,85 @@ public class KnowledgeBaseService {
             Map.entry(KnowledgeEntity.TYPE_ANTI_PATTERN, "反模式"));
 
     private final KnowledgeMapper knowledgeMapper;
+    private final KnowledgeLinkMapper knowledgeLinkMapper;
     private final int topK;
 
     public KnowledgeBaseService(KnowledgeMapper knowledgeMapper,
+                                KnowledgeLinkMapper knowledgeLinkMapper,
                                 @Value("${ea.knowledge.top-k:3}") int topK) {
         this.knowledgeMapper = knowledgeMapper;
+        this.knowledgeLinkMapper = knowledgeLinkMapper;
         this.topK = Math.max(topK, 0);
+    }
+
+    // ---------- 图谱（V15 知识关系图） ----------
+
+    /**
+     * 知识图谱：租户全部条目（节点，含停用/被取代/废弃——前端灰显区分）
+     * + 关系边（supersedes 取代边 + knowledge_link 类型化边合并；supersedes 边无 linkId）。
+     */
+    public KnowledgeGraphResponse graph(Long tenantId) {
+        List<KnowledgeEntity> nodes = knowledgeMapper.selectList(new QueryWrapper<KnowledgeEntity>()
+                .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                .orderByAsc(KnowledgeEntity.COL_ID));
+        List<KnowledgeGraphResponse.Edge> edges = new ArrayList<>();
+        for (KnowledgeEntity n : nodes) {
+            if (n.getSupersedesId() != null) {
+                edges.add(new KnowledgeGraphResponse.Edge(n.getId(), n.getSupersedesId(), "supersedes", null));
+            }
+        }
+        for (KnowledgeLinkEntity l : knowledgeLinkMapper.selectList(new QueryWrapper<KnowledgeLinkEntity>()
+                .eq(KnowledgeLinkEntity.COL_TENANT_ID, tenantId))) {
+            edges.add(new KnowledgeGraphResponse.Edge(l.getSourceId(), l.getTargetId(),
+                    l.getRelationType(), l.getId()));
+        }
+        return new KnowledgeGraphResponse(nodes, edges);
+    }
+
+    /** 新建关系边：双方须同租户存在、不能自连、关系类型白名单内、同向同类型不重复（幂等语义）。 */
+    @Transactional
+    public KnowledgeLinkEntity createLink(Long tenantId, Long sourceId, Long targetId, String relationType) {
+        if (sourceId == null || targetId == null) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "缺少 sourceId/targetId");
+        }
+        if (sourceId.equals(targetId)) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "不能与自身建立关系");
+        }
+        String rel = relationType == null ? null : relationType.trim().toLowerCase(Locale.ROOT);
+        if (!LINK_TYPES.contains(rel)) {
+            throw new BizException(ErrorCode.PARAM_ERROR,
+                    "未知关系类型: " + relationType + "（可选: related/supports/refines/conflicts）");
+        }
+        get(tenantId, sourceId); // 存在性 + 租户校验
+        get(tenantId, targetId);
+        Long dup = knowledgeLinkMapper.selectCount(new QueryWrapper<KnowledgeLinkEntity>()
+                .eq(KnowledgeLinkEntity.COL_TENANT_ID, tenantId)
+                .eq(KnowledgeLinkEntity.COL_SOURCE_ID, sourceId)
+                .eq(KnowledgeLinkEntity.COL_TARGET_ID, targetId)
+                .eq(KnowledgeLinkEntity.COL_RELATION_TYPE, rel));
+        if (dup != null && dup > 0) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "该关系已存在");
+        }
+        KnowledgeLinkEntity link = new KnowledgeLinkEntity();
+        link.setTenantId(tenantId);
+        link.setSourceId(sourceId);
+        link.setTargetId(targetId);
+        link.setRelationType(rel);
+        link.setCreatedAt(Instant.now());
+        knowledgeLinkMapper.insert(link);
+        return link;
+    }
+
+    /** 删除关系边（仅 knowledge_link；supersedes 边随条目编辑变更，不走删除）。 */
+    public void deleteLink(Long tenantId, Long linkId) {
+        KnowledgeLinkEntity link = knowledgeLinkMapper.selectOne(new QueryWrapper<KnowledgeLinkEntity>()
+                .eq(KnowledgeLinkEntity.COL_ID, linkId)
+                .eq(KnowledgeLinkEntity.COL_TENANT_ID, tenantId)
+                .last("LIMIT 1"));
+        if (link == null) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "关系不存在: " + linkId);
+        }
+        knowledgeLinkMapper.deleteById(linkId);
     }
 
     // ---------- 管理 ----------

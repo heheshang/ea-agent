@@ -9,6 +9,7 @@ import com.eaagent.ontology.mapper.AudienceMapper;
 import com.eaagent.ontology.mapper.CampaignMapper;
 import com.eaagent.ontology.mapper.ChannelConfigMapper;
 import com.eaagent.ontology.mapper.CustomerMapper;
+import com.eaagent.ontology.mapper.KnowledgeLinkMapper;
 import com.eaagent.ontology.mapper.KnowledgeMapper;
 import com.eaagent.ontology.mapper.TemplateMapper;
 import com.eaagent.ontology.mapper.TenantMapper;
@@ -19,6 +20,7 @@ import com.eaagent.ontology.model.CampaignEntity;
 import com.eaagent.ontology.model.ChannelConfigEntity;
 import com.eaagent.ontology.model.CustomerEntity;
 import com.eaagent.ontology.model.KnowledgeEntity;
+import com.eaagent.ontology.model.KnowledgeLinkEntity;
 import com.eaagent.ontology.model.TemplateEntity;
 import com.eaagent.ontology.model.TenantEntity;
 import com.eaagent.ontology.model.TenantUserEntity;
@@ -33,6 +35,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,6 +57,7 @@ public class SeedDataInitializer implements ApplicationRunner {
     private final CustomerMapper customerMapper;
     private final UnsubscribeMapper unsubscribeMapper;
     private final KnowledgeMapper knowledgeMapper;
+    private final KnowledgeLinkMapper knowledgeLinkMapper;
     private final KnowledgeBaseService knowledgeService;
     private final AudienceSnapshotService snapshotService;
     private final PasswordEncoder encoder;
@@ -64,7 +68,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                                ChannelConfigMapper channelConfigMapper, AudienceMapper audienceMapper,
                                TemplateMapper templateMapper, CampaignMapper campaignMapper,
                                CustomerMapper customerMapper, UnsubscribeMapper unsubscribeMapper,
-                               KnowledgeMapper knowledgeMapper,
+                               KnowledgeMapper knowledgeMapper, KnowledgeLinkMapper knowledgeLinkMapper,
                                KnowledgeBaseService knowledgeService,
                                AudienceSnapshotService snapshotService,
                                PasswordEncoder encoder, CryptoService cryptoService,
@@ -78,6 +82,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         this.customerMapper = customerMapper;
         this.unsubscribeMapper = unsubscribeMapper;
         this.knowledgeMapper = knowledgeMapper;
+        this.knowledgeLinkMapper = knowledgeLinkMapper;
         this.knowledgeService = knowledgeService;
         this.snapshotService = snapshotService;
         this.encoder = encoder;
@@ -97,6 +102,7 @@ public class SeedDataInitializer implements ApplicationRunner {
             seedSmsChannel(demo.getId());
             seedEmailChannel(demo.getId());
             seedKnowledge(demo.getId());
+            seedKnowledgeLinks(demo.getId());
             log.info("demo tenant already seeded, skip core seed");
             return;
         }
@@ -113,6 +119,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         seedCampaign(tenantId, adminId, audienceId, templateId);
         seedUnsubscribe(tenantId);
         seedKnowledge(tenantId);
+        seedKnowledgeLinks(tenantId);
         log.info("demo seed done: tenant={} admin={}", tenantId, adminId);
     }
 
@@ -277,35 +284,131 @@ public class SeedDataInitializer implements ApplicationRunner {
         unsubscribeMapper.insert(u);
     }
 
-    /** 演示知识库条目（与系统真实行为一致：退订/频控；幂等，该租户已有条目则跳过）。 */
+    /**
+     * 演示知识库条目（与系统真实行为一致：退订/频控/快照；覆盖 V14 本体：7 类 record_type、
+     * active/superseded/obsolete 生命周期与取代链）。
+     * 幂等：逐条按 (tenant_id, title) 检查，已存在标题跳过——存量条目不重插、新条目可增量补入
+     * （演示库已种过旧条目的场景也能拿到新增测试数据）。
+     */
     private void seedKnowledge(Long tenantId) {
-        Long exists = knowledgeMapper.selectCount(new QueryWrapper<KnowledgeEntity>()
-                .eq(KnowledgeEntity.COL_TENANT_ID, tenantId));
-        if (exists != null && exists > 0) {
-            return;
-        }
         Instant now = Instant.now();
+        // 列: {title, content, tags, record_type, lifecycle, supersedesTitle(被本条取代的旧条目标题，须同批先插)}
         Object[][] rows = {
                 {"触达退订规范", "触达前必须核对客户退订状态（unsubscribe 表）：已退订客户禁止任何渠道触达；"
                         + "客户在任一渠道退订即视为全局退订，其他渠道也不得再触达。违规触达会直接发失败。",
-                        List.of("退订", "触达", "合规")},
+                        List.of("退订", "触达", "合规"), "rule", "active", null},
                 {"频道频控", "频道级频控按每天上限（频道配置 max_per_day）限制同一客户在该频道的触达次数；"
                         + "触达前可调用 frequencyCheck 查询客户历史发送总量。",
-                        List.of("频控", "触发规则")},
+                        List.of("频控", "触发规则"), "rule", "active", null},
+                {"客户画像常用字段", "客户 attributes 为 jsonb 键值对，常用键：preferred_channel（偏好触达通道）、name（姓名）、"
+                        + "gender（性别）、hobby（兴趣）；tags 为字符串数组，可用 DSL 过滤（如 tags CONTAINS 'VIP'）。"
+                        + "queryCustomers 返回完整画像，供人群圈选与发送前核对。",
+                        List.of("客户", "画像", "属性"), "fact", "active", null},
+                {"静默时段触达约束", "触达时间受频道配置 quiet_hours 静默时段约束（演示默认 23:00-07:00）；"
+                        + "静默时段内禁止发起触达，bestSendTime 评分也会回避静默时段。",
+                        List.of("约束", "静默时段", "触达"), "constraint", "active", null},
+                {"新客首单触发窗（v1）", "新客首单活动触发规则：event_type=order_placed、window=7d，"
+                        + "即客户下单后 7 天内触发首单提醒；已被 v2 取代（window 缩短为 1d，避免优惠过期）。",
+                        List.of("触发规则", "窗口"), "rule", "superseded", null},
+                {"新客首单触发窗（v2）", "新客首单活动触发规则：event_type=order_placed、window=1d，"
+                        + "下单后次日触发提醒，节奏更紧凑；取代 v1 的 7d 窗口，与种子活动「新人复购提醒」一致。",
+                        List.of("触发规则", "窗口"), "rule", "active", "新客首单触发窗（v1）"},
+                {"短信通道接入决策", "短信触达经配置驱动网关适配器：channel_config 配置存在则走 HTTP 网关"
+                        + "（EA_MOCK_GW_URL 指定 endpoint），未配置降级 console。接入真实短信厂商只需改配置不换业务代码，"
+                        + "mock 网关可离线联调。",
+                        List.of("短信", "通道", "网关"), "decision", "active", null},
+                {"触达频控上限取值的理由", "频道频控 max_per_day 上限（演示默认 10 次/天）在触达前经 frequencyCheck 校验："
+                        + "上限兼顾留存触达频率与用户打扰，超限则本次触达被拒绝，避免同一客户被活动反复轰炸。",
+                        List.of("频控", "理由"), "rationale", "active", null},
+                {"人群规则过宽的教训", "建活动前须用 queryAudience 核对人群规模：DYNAMIC 人群规则过宽会圈中全量客户，"
+                        + "导致整批误触达；已建活动发送以创建时的 audience_snapshot 快照为准，后续改人群规则不影响存量活动。",
+                        List.of("人群", "教训", "快照"), "lesson", "active", null},
+                {"忽略退订名单群发", "反模式：触达前不核对 unsubscribe 退订状态，已退订客户仍被发送——既浪费额度又引发客诉。"
+                        + "正确做法：sendTouch 前核对退订与频控（SendTouchAction 发送前校验），再决定是否投递。",
+                        List.of("退订", "反模式"), "anti_pattern", "active", null},
+                {"灰度/AB 实验机制决策", "早期灰度比例推送与 AB 分流实验机制已下线（V11/V12 迁移删除 gray_ratio/ab_split/ab_variants "
+                        + "等字段），当前发送为全量投递；实验验证改由人群对比完成。本条仅作历史记录保留（obsolete，检索默认不命中）。",
+                        List.of("灰度", "实验", "历史"), "decision", "obsolete", null},
         };
+        Map<String, Long> inserted = new HashMap<>();
         for (Object[] row : rows) {
+            String title = (String) row[0];
+            Long exists = knowledgeMapper.selectCount(new QueryWrapper<KnowledgeEntity>()
+                    .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                    .eq(KnowledgeEntity.COL_TITLE, title));
+            if (exists != null && exists > 0) {
+                continue;
+            }
             KnowledgeEntity k = new KnowledgeEntity();
             k.setTenantId(tenantId);
-            k.setTitle((String) row[0]);
+            k.setTitle(title);
             k.setContent((String) row[1]);
             k.setTags((List<String>) row[2]);
             k.setEnabled(true);
+            k.setRecordType((String) row[3]);
+            k.setLifecycle((String) row[4]);
+            String prevTitle = (String) row[5];
+            if (prevTitle != null && inserted.containsKey(prevTitle)) {
+                k.setSupersedesId(inserted.get(prevTitle));
+            }
             k.setCreatedAt(now);
             k.setUpdatedAt(now);
             knowledgeMapper.insert(k);
+            inserted.put(title, k.getId());
         }
-        knowledgeService.backfillEmbeddings();
-        log.info("knowledge seeded: tenant={} count={}", tenantId, rows.length);
+        if (!inserted.isEmpty()) {
+            knowledgeService.backfillEmbeddings();
+            log.info("knowledge seeded: tenant={} inserted={}", tenantId, inserted.size());
+        }
+    }
+
+    /**
+     * 演示知识图谱类型化关系边（V15，幂等：按 (tenant_id, source, target, type) 查重，可增量补入）。
+     * 边语义与种子条目内容一致：理由支撑规则、反模式冲突规范、画像支撑教训、
+     * 频道频控与静默时段相关、静默时段细化触达规范；取代链（supersedes）由条目 supersedes_id 表达。
+     */
+    private void seedKnowledgeLinks(Long tenantId) {
+        // {sourceTitle, targetTitle, relationType}
+        String[][] links = {
+                {"触达频控上限取值的理由", "频道频控", KnowledgeLinkEntity.REL_SUPPORTS},
+                {"忽略退订名单群发", "触达退订规范", KnowledgeLinkEntity.REL_CONFLICTS},
+                {"客户画像常用字段", "人群规则过宽的教训", KnowledgeLinkEntity.REL_SUPPORTS},
+                {"频道频控", "静默时段触达约束", KnowledgeLinkEntity.REL_RELATED},
+                {"静默时段触达约束", "触达退订规范", KnowledgeLinkEntity.REL_REFINES},
+        };
+        int inserted = 0;
+        for (String[] l : links) {
+            KnowledgeEntity src = knowledgeMapper.selectOne(new QueryWrapper<KnowledgeEntity>()
+                    .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                    .eq(KnowledgeEntity.COL_TITLE, l[0])
+                    .last("LIMIT 1"));
+            KnowledgeEntity dst = knowledgeMapper.selectOne(new QueryWrapper<KnowledgeEntity>()
+                    .eq(KnowledgeEntity.COL_TENANT_ID, tenantId)
+                    .eq(KnowledgeEntity.COL_TITLE, l[1])
+                    .last("LIMIT 1"));
+            if (src == null || dst == null) {
+                continue; // 条目被删/不存在则跳过，不阻塞其余边
+            }
+            Long dup = knowledgeLinkMapper.selectCount(new QueryWrapper<KnowledgeLinkEntity>()
+                    .eq(KnowledgeLinkEntity.COL_TENANT_ID, tenantId)
+                    .eq(KnowledgeLinkEntity.COL_SOURCE_ID, src.getId())
+                    .eq(KnowledgeLinkEntity.COL_TARGET_ID, dst.getId())
+                    .eq(KnowledgeLinkEntity.COL_RELATION_TYPE, l[2]));
+            if (dup != null && dup > 0) {
+                continue;
+            }
+            KnowledgeLinkEntity link = new KnowledgeLinkEntity();
+            link.setTenantId(tenantId);
+            link.setSourceId(src.getId());
+            link.setTargetId(dst.getId());
+            link.setRelationType(l[2]);
+            link.setCreatedAt(Instant.now());
+            knowledgeLinkMapper.insert(link);
+            inserted++;
+        }
+        if (inserted > 0) {
+            log.info("knowledge links seeded: tenant={} inserted={}", tenantId, inserted);
+        }
     }
 
     }

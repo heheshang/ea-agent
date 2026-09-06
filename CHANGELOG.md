@@ -7,7 +7,7 @@
 ### Added
 
 - **agent 自动建模板 + 活动多通道 DAG 编排 + 会话审批门控**：
-  - **自动建模板**：`createTemplate` Action 直建模板（内容 `{{...}}` 变量提取为 `vars`，产物即 APPROVED——审核职责由会话门控承担）；`createCampaign` 校验 template_id 缺失/不存在报可读错误并提示先建模板，顶层 channel/template_id 缺省取 workflow 首节点。
+  - **自动建模板**：`createTemplate` Action 直建模板（内容 `{{...}}` 变量提取为 `vars`，产物即 PENDING 进入人工审核流——见 Fixed「模板审核流恢复」）；`createCampaign` 校验 template_id 缺失/不存在报可读错误并提示先建模板，顶层 channel/template_id 缺省取 workflow 首节点。
   - **多通道编排 DAG**：`campaign.workflow` jsonb 节点数组（V13 迁移，节点 `{id,channel,template_id,condition,next}`）+ `delivery.workflow_node` 溯源列；`WorkflowCodec.validate` 校验（唯一 id、DAG 无环、依赖可达）、`WorkflowConditionEvaluator`（event/customer/prev 三组 8 操作符）、`WorkflowExecutor` 每客户拓扑序 DFS——根节点起，前驱任一非 SENT/DELIVERED 跳过，条件命中 `sendOneCustomer` 发送、成功沿 next 递归；`EventConsumer` 消费命中判 workflow 非空分流（空则原 sendTouch 管线零回归）；投递日志与前端列表/看板呈现「DAG · N」徽标、投递「节点」列、编辑表单 workflow textarea。
   - **会话审批门控**：`POST /api/agent/chat` 携带 `mode`（auto 直接执行 / suggest 写动作挂起，非法缺省 auto），落 `ea:agent:mode:{tenant}:{session}`（TTL 1d）；suggest 下 `applyAction` 对写动作（createTemplate/createCampaign/updateCampaign/createAudience/updateCustomerState/pauseCampaign/sendTouch，importEvents 除外）不入库执行、挂起 Redis List `ea:agent:approval:pending`（稳定键序 JSON）返回 `PENDING_APPROVAL`；`GET /api/agent/approvals?status=pending` + `POST /api/agent/approvals/{id}/decision`（REVIEWER 及以上，越权 E-10003）——批准按原请求身份执行、原位更新保留记录；AgentWorkbench 新增 auto/suggest 切换与「待批审批」面板（10s 轮询、参数预览、批准/拒绝）。
 - **活动投递查看（触发人员列表 + 投递日志）**：新增 `GET /api/campaigns/{id}/deliveries` —— 租户隔离的投递日志游标分页（`PageToken` offset 语义同对象 API，`limit` 1–200 默认 20、`created_at,id` 倒序稳定排序），投递行富化客户联系信息（`customer_external_id` / `customer_phone`、`customer_email` 按 `MaskUtils` 掩码 / `customer_name` 取 `attributes.name` / `customer_status`，本页涉及客户一次性批量查询防 N+1）。查询收敛到 `CampaignDeliveryService`（Controller 不再直调 mapper，`abReport` 一并迁移）。Web Campaigns 表格与看板新增「查看」入口，弹窗双 tab：触发人员（客户 ID/外部 ID/姓名/掩码手机/掩码邮箱/状态）+ 投递日志（投递 ID/客户/通道/状态/尝试/灰度/AB 组/错误/创建与更新时间），共用同一分页数据源（el-pagination 偏移量按 PageToken 契约前端编码）。
@@ -40,6 +40,9 @@
 
 ### Changed
 
+- **知识库关系图谱（V15 类型化关系边 + 力导图）**：新增 `knowledge_link` 表（V15 迁移——`source_id`/`target_id` 双 FK ON DELETE CASCADE、`relation_type` ∈ related/supports/refines/conflicts，`UNIQUE(tenant_id, source_id, target_id, relation_type)` + `CHECK source_id <> target_id`，与既有 `supersedes_id` 取代链并列：生命周期语义仍由 supersedes 表达、trace 接口不变）。后端 `GET /api/knowledge/graph` 合并返回「本体节点 + 取代链 + 类型化边」（`KnowledgeGraphResponse`：`nodes` 全量 KnowledgeEntity、`edges` 含 `linkId`，取代边 `relation=supersedes`）；`POST /api/knowledge/links` / `DELETE /api/knowledge/links/{id}` 管理关系——校验缺参、自环、未知类型、端点不存在、重复与租户越权（E-10001/E-12007）。前端知识库页新增「🕸 关系图谱」弹窗（`KnowledgeGraph.vue` 力导向 SVG：斥力/弹簧/引力/阻尼 320 轮迭代静态收敛，节点按 record_type 着色、关系边区分线色与虚线样式、取代链节点生命周期环标注、图例 + 点击节点信息卡）。种子数据补 5 条关系边（支撑/冲突/相关/细化），图谱即插即用。
+- **知识库种子扩充（V14 本体演示，幂等改为逐条按标题）**：`SeedDataInitializer.seedKnowledge` 由「该租户有任意条目即整体跳过」改为**逐条按 `(tenant_id, title)` 判断**——存量条目不重插、新条目可增量补入（既有 demo 库启动后也能拿到新数据，不再依赖全表为空）。新增 9 条测试条目覆盖 V14 本体全维度：7 类 record_type 齐全（fact 客户画像字段 / constraint 静默时段 / decision 短信通道接入 / rationale 频控上限理由 / lesson 人群规则过宽教训 / anti_pattern 忽略退订群发 / rule 触发窗 v1、v2），生命周期含 superseded（触发窗 v1）与 obsolete（灰度/AB 历史决策，检索默认不命中）各一条，以及取代链「触发窗 v2 → v1」（`supersedes_id` + trace 接口可回放最旧→最新）；内容与系统真实行为对齐（退订/频控/audience_snapshot/通道降级/灰度 AB 已下线），落库后即时回填 pgvector embedding，检索试预览与 Agent 注入可直接命中。
+
 - **移除 AB 实验机制（灰度/冷却清理收尾）**：V12 迁移删除 `campaign.ab_mode/ab_split/ab_variants`、`delivery.ab_group` 与 `chk_campaign_ab` CHECK；删除 `AbBucketer` 与 `GET /api/campaigns/{id}/ab-report`（Controller 端点 + `CampaignDeliveryService.abReport` + 前端「AB」按钮全链路）；`sendTouch` 发送管线删 SHA256 确定性分桶与 `DeliveryMessage.abGroup`（Console/Email 适配器日志同步），`CreateCampaignAction`/`UpdateCampaignAction` 删 AB 校验块与字段覆盖（update 落库前 AB 一致性校验同步删除）；Agent 提示词/工具描述去 AB（`SYS_PROMPT_VERSION` v12），seed 知识「AB 实验」条目删除（存量幂等跳过不重插）；Web 表单删「AB 模式/AB 切分/AB 变体」、列表删「AB 模式」列、看板删「AB：」行、投递日志删「AB 组」列；docs（详细设计 v1.7 / 架构 v1.5 / 数据流 v1.5 / ontology-ai-design / tech-stack）正文同步，残留灰度（gray_ratio/gray_hit/chk_campaign_gray）与冷却（ea:cd:* / trigger_rule.cooldown）引用一并清理；触发规则契约为 `{"event_type","window"}`。
 - **移除灰度推送与冷却期机制（AB 实验保留）**：V11 迁移删除 `campaign.gray_ratio`、`delivery.gray_hit` 列与 `chk_campaign_gray` CHECK（Flyway 启动幂等执行），存量 `trigger_rule` jsonb 的 `cooldown` 键清理（`window` 为事件时间窗保留），seed 知识条目「冷却窗与频控」「灰度发布」替换为「频道频控」「AB 实验」；删除 `CooldownService` 与冷却 Redis key（`ea:cd:*`），发送管线移除灰度抽样与冷却窗检查、保留 AB SHA256 确定性分桶，`FrequencyCheckFunction` 删 `cooling_key` 输出，`trigger_rule` 契约收敛为 `{"event_type","window"}`（宽松解析归一逻辑保留）；Agent 提示词/工具描述/错误文案同步去灰度冷却（`SYS_PROMPT_VERSION` v11）；Web 活动表单删「灰度 %」「冷静期」输入项、列表/看板/投递日志删灰度呈现（保留 AB 模式与 AB 组列）；docs（架构/数据流）正文同步。
 
@@ -54,6 +57,8 @@
 - **Ontology 调用链路图改为流程图**：由「分层列表 + 文字箭头」改为 SVG 流程图——5 条泳道（引擎/工具/Action/Function/对象）分支连线（实线 = 有调用、虚线 = 未激活静态拓扑），连线改为**正交折线路由**：竖线段走泳道间 38px 列间隙、跨泳道长边走上下两行盒子之间 16px 行间隙带（全程不压任何盒子），箭头落点按目标盒左缘**端口垂直均布**（同一对象多条入边不再汇聚同一点，间距 ≤ 12px），长链边调用次数/均耗时标签锚定行间隙带也不被盒子遮挡。对象节点保留记录数/字段数徽章与点击数据下钻，未调用节点置灰。
 
 ### Fixed
+
+- **模板审核流恢复（agent 自动建模板绕过审核）**：`CreateTemplateAction`（3d9c235 引入 agent 自动建模板）产物 `review_status` 直出 `APPROVED`，模板页（消息模板 N · 审核流 DRAFT→PENDING→APPROVED）形同虚设——agent 建的模板不经任何人工审核即可被路由/发送，库里 9 条模板 8 条直接 APPROVED、仅 1 条手动提交的 PENDING 无人审。修复：产物改为 `REVIEW_PENDING` 进入人工审核流（REVIEWER 在模板管理页通过/驳回，发送与规则路由仍强校验 APPROVED）；会话审批门控（auto/suggest）只控制 `applyAction` 是否执行，不再替代模板审核。回归测试 `CreateTemplateActionTest` 锁定产物 PENDING。
 
 - **前端 401 不自动回登录页**：HTTP 层 401（token 过期/无效、租户失效/不匹配，由 `TenantFilter.reject` 返回）此前只弹错误消息不跳转，用户停留在失效会话的页面。axios 响应拦截器 rejection 分支增加 `status === 401` 判定：清除 `ea:token` 并跳转 `/login`（登录页自身不跳），与业务错误码 10002/10003/11003 分支行为一致。
 

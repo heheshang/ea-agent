@@ -21,8 +21,10 @@ import java.util.regex.Pattern;
 
 /**
  * createTemplate（10.4 扩展）：agent 侧的模板创建动作 —— 编排链路里「模板未创建时先创建模板」。
- * 产物 review_status 直接 APPROVED：会话审批门控（auto 直接放行 / suggest 挂起人工审批）已在上层
- * ApplyAction 承担审核职责，模板本身不再进 DRAFT→PENDING 审核流（与 Web 传统 submit→approve 流程并存）。
+ * 产物 review_status 为 PENDING：进入模板审核流（DRAFT→PENDING→APPROVED|REJECTED），
+ * 需 REVIEWER 在模板管理页审批通过后才能被路由/发送使用（SendTouchAction 与 TemplateRoutingService
+ * 均强校验 APPROVED）。会话审批门控（auto 直接执行 / suggest 挂起人工审批）只控制 applyAction
+ * 是否执行，不等于模板审核——模板本身始终走人工审核。
  * content 的 {{占位符}} 自动提取为 vars，供路由条件与渲染使用。
  */
 @Component
@@ -43,7 +45,7 @@ public class CreateTemplateAction extends AbstractAction {
     public ActionMeta meta() {
         return ActionMeta.builder()
                 .name("createTemplate")
-                .description("创建触达模板（{{var}} 占位符自动提取；创建即 APPROVED 可直接发送；在编排/路由需要模板而模板未创建时先调用本动作）")
+                .description("创建触达模板（{{var}} 占位符自动提取；创建即 PENDING 待人工审核，审批通过（APPROVED）后路由/发送才可用；在编排/路由需要模板而模板未创建时先调用本动作）")
                 .requiredArgs(List.of("title", "channel", "content"))
                 .permissions(List.of(Roles.OPERATOR))
                 .build();
@@ -66,7 +68,7 @@ public class CreateTemplateAction extends AbstractAction {
         t.setTitle(req.getString("title"));
         t.setContent(content);
         t.setVars(extractVars(content));
-        t.setReviewStatus(TemplateEntity.REVIEW_APPROVED);
+        t.setReviewStatus(TemplateEntity.REVIEW_PENDING);
         t.setCreatedAt(Instant.now());
         templateMapper.insert(t);
 

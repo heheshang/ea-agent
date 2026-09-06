@@ -61,6 +61,21 @@ export interface KnowledgeHit {
   lifecycle?: string
 }
 
+/** 知识图谱关系边（V15 knowledge_link + supersedes 取代边合并；supersedes 边 linkId 为空）。 */
+export interface KnowledgeGraphEdge {
+  source: number
+  target: number
+  /** related | supports | refines | conflicts | supersedes */
+  relation: string
+  linkId?: number | null
+}
+
+/** 知识图谱（V15）：节点=全部条目，边=类型化关系+取代链。 */
+export interface KnowledgeGraph {
+  nodes: KnowledgeEntry[]
+  edges: KnowledgeGraphEdge[]
+}
+
 /** 消息模板（租户维度，审核流 DRAFT→PENDING→APPROVED|REJECTED，REVIEWER 审批）。 */
 export interface Template {
   id: number

@@ -1,11 +1,14 @@
 package com.eaagent.app.web;
 
 import com.eaagent.agent.service.KnowledgeBaseService;
+import com.eaagent.api.dto.KnowledgeLinkWriteRequest;
 import com.eaagent.api.dto.KnowledgeWriteRequest;
 import com.eaagent.common.PageResult;
 import com.eaagent.common.Result;
 import com.eaagent.common.TenantContext;
 import com.eaagent.ontology.model.KnowledgeEntity;
+import com.eaagent.ontology.model.KnowledgeGraphResponse;
+import com.eaagent.ontology.model.KnowledgeLinkEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -74,6 +77,26 @@ public class KnowledgeController {
             return m;
         }).toList();
         return Result.ok(out);
+    }
+
+    /** 知识图谱（V15）：租户全部条目（节点）+ 关系边（supersedes 取代边 + 类型化边合并），前端力导布局渲染。 */
+    @GetMapping("/graph")
+    public Result<KnowledgeGraphResponse> graph() {
+        return Result.ok(knowledgeService.graph(TenantContext.requiredTenantId()));
+    }
+
+    /** 新建关系边：source → target 类型化边（related/supports/refines/conflicts；同向同类型不重复）。 */
+    @PostMapping("/links")
+    public Result<KnowledgeLinkEntity> createLink(@RequestBody KnowledgeLinkWriteRequest req) {
+        return Result.ok(knowledgeService.createLink(TenantContext.requiredTenantId(),
+                req.getSourceId(), req.getTargetId(), req.getRelationType()));
+    }
+
+    /** 删除关系边（仅类型化边；supersedes 边随条目编辑变更）。 */
+    @DeleteMapping("/links/{id}")
+    public Result<Void> deleteLink(@PathVariable Long id) {
+        knowledgeService.deleteLink(TenantContext.requiredTenantId(), id);
+        return Result.ok(null);
     }
 
     @PostMapping

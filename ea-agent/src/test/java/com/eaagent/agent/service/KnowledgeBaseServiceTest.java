@@ -4,8 +4,11 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.eaagent.api.dto.KnowledgeWriteRequest;
 import com.eaagent.common.BizException;
+import com.eaagent.ontology.mapper.KnowledgeLinkMapper;
 import com.eaagent.ontology.mapper.KnowledgeMapper;
 import com.eaagent.ontology.model.KnowledgeEntity;
+import com.eaagent.ontology.model.KnowledgeGraphResponse;
+import com.eaagent.ontology.model.KnowledgeLinkEntity;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -16,6 +19,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -64,7 +68,7 @@ class KnowledgeBaseServiceTest {
     }
 
     private static KnowledgeBaseService svc(KnowledgeMapper mapper, int topK) {
-        return new KnowledgeBaseService(mapper, topK);
+        return new KnowledgeBaseService(mapper, mock(KnowledgeLinkMapper.class), topK);
     }
 
     // ---------- 切词 ----------
@@ -406,5 +410,83 @@ req.setSupersedesId(3L); // 保持原取代目标
         svc(mapper, 3).backfillEmbeddings();
         verify(mapper).updateEmbedding(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.argThat(s -> s.startsWith("[")));
         verify(mapper).updateEmbedding(org.mockito.ArgumentMatchers.eq(2L), org.mockito.ArgumentMatchers.argThat(s -> s.startsWith("[")));
+    }
+
+    // ---------- 图谱（V15） ----------
+
+    @Test
+    void graphMergesSupersedesAndTypedLinks() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeLinkMapper linkMapper = mock(KnowledgeLinkMapper.class);
+        KnowledgeEntity v1 = entry("规则v1", "旧规则", List.of(), true);
+        v1.setId(1L);
+        v1.setLifecycle("superseded");
+        KnowledgeEntity v2 = entry("规则v2", "新规则", List.of(), true);
+        v2.setId(2L);
+        v2.setLifecycle("active");
+        v2.setSupersedesId(1L);
+        when(mapper.selectList(any())).thenReturn(List.of(v1, v2));
+        KnowledgeLinkEntity link = new KnowledgeLinkEntity();
+        link.setId(9L);
+        link.setTenantId(1L);
+        link.setSourceId(1L);
+        link.setTargetId(2L);
+        link.setRelationType("related");
+        when(linkMapper.selectList(any())).thenReturn(List.of(link));
+
+        KnowledgeGraphResponse g = new KnowledgeBaseService(mapper, linkMapper, 3).graph(1L);
+
+        assertEquals(2, g.getNodes().size());
+        assertEquals(2, g.getEdges().size());
+        KnowledgeGraphResponse.Edge sup = g.getEdges().get(0);
+        assertEquals(2L, sup.getSource());
+        assertEquals(1L, sup.getTarget());
+        assertEquals("supersedes", sup.getRelation());
+        assertNull(sup.getLinkId());
+        KnowledgeGraphResponse.Edge rel = g.getEdges().get(1);
+        assertEquals(1L, rel.getSource());
+        assertEquals(2L, rel.getTarget());
+        assertEquals("related", rel.getRelation());
+        assertEquals(9L, rel.getLinkId());
+    }
+
+    @Test
+    void createLinkValidatesEndpointAndDuplicate() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeLinkMapper linkMapper = mock(KnowledgeLinkMapper.class);
+        when(mapper.selectOne(any())).thenReturn(entry("存在", "内容", List.of(), true)); // 两端存在
+        KnowledgeBaseService svc = new KnowledgeBaseService(mapper, linkMapper, 3);
+
+        assertThrows(BizException.class, () -> svc.createLink(1L, 1L, 1L, "related"));        // 自连
+        assertThrows(BizException.class, () -> svc.createLink(1L, 1L, 2L, "supercedes"));     // 非法类型
+        when(linkMapper.selectCount(any())).thenReturn(1L);
+        assertThrows(BizException.class, () -> svc.createLink(1L, 1L, 2L, "supports"));       // 已存在
+    }
+
+    @Test
+    void createLinkNormalizesTypeAndInserts() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeLinkMapper linkMapper = mock(KnowledgeLinkMapper.class);
+        when(mapper.selectOne(any())).thenReturn(entry("存在", "内容", List.of(), true));
+        when(linkMapper.selectCount(any())).thenReturn(0L);
+        KnowledgeBaseService svc = new KnowledgeBaseService(mapper, linkMapper, 3);
+
+        KnowledgeLinkEntity created = svc.createLink(1L, 3L, 5L, " SUPPORTS ");
+
+        assertEquals("supports", created.getRelationType());
+        assertEquals(3L, created.getSourceId());
+        assertEquals(5L, created.getTargetId());
+        assertEquals(1L, created.getTenantId());
+        verify(linkMapper).insert(any(KnowledgeLinkEntity.class));
+    }
+
+    @Test
+    void deleteLinkRequiresTenantMatch() {
+        KnowledgeLinkMapper linkMapper = mock(KnowledgeLinkMapper.class);
+        when(linkMapper.selectOne(any())).thenReturn(null);
+        KnowledgeBaseService svc = new KnowledgeBaseService(mock(KnowledgeMapper.class), linkMapper, 3);
+
+        assertThrows(BizException.class, () -> svc.deleteLink(1L, 9L));
+        verify(linkMapper, never()).deleteById((java.io.Serializable) any());
     }
 }

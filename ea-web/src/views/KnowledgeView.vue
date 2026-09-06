@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { del, get, post, put } from '../api/http'
 import type { KnowledgeEntry, KnowledgeHit, PageResult } from '../api/types'
+import KnowledgeGraph from '../components/KnowledgeGraph.vue'
 
 /**
  * 知识库管理：租户维度知识条目 CRUD + 启停 + 试检索。
@@ -75,6 +76,9 @@ const hits = ref<KnowledgeHit[]>([])
 const traceOpen = ref(false)
 const traceTitle = ref('')
 const traceChain = ref<KnowledgeEntry[]>([])
+
+/** 知识图谱（V15）：力导布局关系图弹窗。 */
+const graphOpen = ref(false)
 
 async function load() {
   loading.value = true
@@ -224,7 +228,10 @@ onMounted(() => {
         <div class="page-title">📚 知识库</div>
         <div class="page-sub">租户维度的业务规则与事实条目，对话时按相关度注入 Agent 上下文（无命中不注入）</div>
       </div>
-      <el-button type="primary" @click="openCreate">＋ 新建条目</el-button>
+      <div class="page-head-actions">
+        <el-button @click="graphOpen = true">🕸 关系图谱</el-button>
+        <el-button type="primary" @click="openCreate">＋ 新建条目</el-button>
+      </div>
     </div>
 
     <div class="toolbar">
@@ -403,6 +410,9 @@ onMounted(() => {
         <el-button @click="traceOpen = false">关闭</el-button>
       </template>
     </el-dialog>
+  <el-dialog v-model="graphOpen" title="🕸 知识关系图谱（力导布局）" width="920px">
+      <KnowledgeGraph />
+    </el-dialog>
   </div>
 </template>
 
@@ -426,6 +436,10 @@ onMounted(() => {
   font-size: 12px;
   color: #86909c;
   margin-top: 4px;
+}
+.page-head-actions {
+  display: flex;
+  gap: 8px;
 }
 .toolbar {
   display: flex;

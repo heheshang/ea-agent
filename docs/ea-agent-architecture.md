@@ -158,7 +158,7 @@
 |---|---|---|---|
 | sendTouch | customer / channel / template / 请求ID | 权限、频控、退订、时段、地址完备 | 异步触达 → Delivery |
 | createCampaign | 人群 / 渠道 / 模板 / 时间 | 权限、模板审核状态 | 新建任务 |
-| createTemplate | 模板（通道 / 标题 / 内容） | 权限 | 新建模板（agent 自动建模板入口；产物即 APPROVED，审核职责由会话门控承担） |
+| createTemplate | 模板（通道 / 标题 / 内容） | 权限 | 新建模板（agent 自动建模板入口；产物即 PENDING 待人工审核，路由/发送强校验 APPROVED） |
 | pauseCampaign | campaign | 权限 | 暂停任务 |
 | updateCustomerState | customer / 状态 | 权限 | 更新画像状态 |
 | importEvents | events[] | 权限、幂等去重 | 入业务事件总线（EA-Bus） |
