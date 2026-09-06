@@ -83,6 +83,9 @@ ea:
     api-key: ${MODEL_API_KEY:${EA_LLM_API_KEY:}}
     base-url: ${MODEL_BASE_URL:${EA_LLM_BASE_URL:}}
     workspace-dir: ${AGENT_WORKSPACE:.agentscope/workspace}
+    # 存储后端：filesystem=默认本地 JsonFile 存储（工作区落盘）；postgres=会话状态与 workspace 文件落库
+    # PostgreSQL 并开启多租户隔离（userId=tenant-{id} 派生命名空间，DB 列 + FK 兜底）。默认 filesystem，零回归。
+    file-store: ${EA_AGENTSCOPE_FILE_STORE:postgres}
     # 技能目录（SKILL.md 技能文件，YAML frontmatter: name/description；harness 自动注入技能提示词
     # 与 load_skill_through_path 技能加载工具）。默认仓库内 agentscope-skills/，可经 EA_AGENTSCOPE_SKILLS_DIR 覆盖。
     skills-dir: ${EA_AGENTSCOPE_SKILLS_DIR:agentscope-skills}

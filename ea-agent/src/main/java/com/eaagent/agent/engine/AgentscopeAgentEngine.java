@@ -3,6 +3,7 @@ package com.eaagent.agent.engine;
 import com.eaagent.agent.event.EngineEvent;
 import com.eaagent.agent.mcp.McpClientRegistry;
 import com.eaagent.agent.service.KnowledgeBaseService;
+import com.eaagent.agent.storage.PgDistributedStore;
 import com.eaagent.agent.tool.AgentToolRegistry;
 import com.eaagent.common.Texts;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -120,6 +121,10 @@ public class AgentscopeAgentEngine implements AgentEngine {
     private final AgentToolCallMapper toolCallMapper;
     /** 技能目录（技能仓库 Layer-2，配置驱动；默认仓库内 agentscope-skills/）。 */
     private final String skillsDir;
+    /** 存储后端切换（ea.agentscope.file-store）：filesystem=默认本地 JsonFile 存储；postgres=落库 PG + 多租户隔离。 */
+    private final String fileStore;
+    /** PG 分布式存储（仅 file-store=postgres 时装配；filesystem 模式下为空，零回归）。 */
+    private final org.springframework.beans.factory.ObjectProvider<PgDistributedStore> pgStoreProvider;
     private final Map<String, HarnessAgent> sessions = new ConcurrentHashMap<>();
     /** 按 session 与 HarnessAgent 一一对应的统计采集器（stream 完成时 drain 落库）。 */
     private final Map<String, RunStatsMiddleware> statses = new ConcurrentHashMap<>();
@@ -140,7 +145,9 @@ public class AgentscopeAgentEngine implements AgentEngine {
             KnowledgeBaseService knowledgeService,
             @Value("${ea.knowledge.top-k:3}") int knowledgeTopK,
             AgentRunMapper runMapper,
-            AgentToolCallMapper toolCallMapper) {
+            AgentToolCallMapper toolCallMapper,
+            @Value("${ea.agentscope.file-store:filesystem}") String fileStore,
+            org.springframework.beans.factory.ObjectProvider<PgDistributedStore> pgStoreProvider) {
         this.model = model;
         this.apiKey = apiKey;
         this.baseUrl = baseUrl;
@@ -157,6 +164,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
         this.skillsDir = skillsDir;
         this.runMapper = runMapper;
         this.toolCallMapper = toolCallMapper;
+        this.fileStore = fileStore;
+        this.pgStoreProvider = pgStoreProvider;
     }
 
     private Model resolveModel() {
@@ -276,7 +285,21 @@ public class AgentscopeAgentEngine implements AgentEngine {
 
     @Override
     public Flux<EngineEvent> stream(RunContext rc, String userInput) {
-        HarnessAgent a = sessions.computeIfAbsent(rc.sessionId(), sid -> {
+        // 多租户存储后端：postgres 模式下用 PG DistributedStore 并开启多租户隔离（userId=tenant-{id}）。
+        // filesystem 模式（默认）不接线、userId=null，行为逐字保留（零回归）。
+        PgDistributedStore pgStore = null;
+        if ("postgres".equals(fileStore)) {
+            pgStore = pgStoreProvider.getIfAvailable();
+            if (pgStore == null) {
+                log.warn("file-store=postgres 但 PgDistributedStore 未装配，退化为本地 filesystem 存储");
+            }
+        }
+        final boolean pg = pgStore != null;
+        final PgDistributedStore resolvedPgStore = pgStore;
+        final String sessionCacheKey = pg ? rc.tenantId() + ":" + rc.sessionId() : rc.sessionId();
+        final String tenantUserId = pg ? "tenant-" + rc.tenantId() : null;
+        final String resolvedUserId = tenantUserId == null ? null : tenantUserId;
+        HarnessAgent a = sessions.computeIfAbsent(sessionCacheKey, sid -> {
             Toolkit tk = new Toolkit();
             for (AgentTool t : toolRegistry.forTenant(rc.tenantId(), rc.userId(), rc.role(), rc.sessionId())) {
                 tk.registerAgentTool(t);
@@ -292,7 +315,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
                                     : List.of();
             RunStatsMiddleware statsMw = new RunStatsMiddleware(model, sid, toolCallMapper);
             statses.put(sid, statsMw);
-            return HarnessAgent.builder()
+            HarnessAgent.Builder b = HarnessAgent.builder()
                     .name("ea-operator")
                     .description("智能运营助手")
                     .sysPrompt(SYS_PROMPT)
@@ -305,15 +328,21 @@ public class AgentscopeAgentEngine implements AgentEngine {
                     .disableFilesystemTools()
                     .disableShellTool()
                     .disableMemoryTools()
-                    .disableSubagents()
-                    .build();
+                    .disableSubagents();
+            if (pg) {
+                // PG 存储接线：统一注入 stateStore + baseStore（HarnessAgent builder 自动装配），
+                // 并显式启用 RemoteFilesystem 工作区后端。
+                b.distributedStore(resolvedPgStore)
+                        .filesystem(new io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec());
+            }
+            return b.build();
         });
         // MCP 工具以 ToolBase 注册，默认权限语义为「非只读工具每次调用需人工授权」（ASK）；
         // 无人值守运营引擎无 HITL 通道，ASK 会使工具调用悬空（发 RequireUserConfirmEvent +
         // RequestStopEvent，工具实际不执行）。切 BYPASS：全部放行（库级 API，持久化到会话槽，
         // 后续同会话调用保持）。
-        a.setPermissionMode(null, rc.sessionId(), io.agentscope.core.permission.PermissionMode.BYPASS);
-        RunStatsMiddleware statsMw = statses.get(rc.sessionId());
+        a.setPermissionMode(resolvedUserId, rc.sessionId(), io.agentscope.core.permission.PermissionMode.BYPASS);
+        RunStatsMiddleware statsMw = statses.get(sessionCacheKey);
         AtomicReference<String> finalReply = new AtomicReference<>();
         Map<String, StringBuilder> toolResults = new HashMap<>();
         Map<String, StringBuilder> toolArgs = new HashMap<>();
@@ -328,9 +357,10 @@ public class AgentscopeAgentEngine implements AgentEngine {
         log.info("stream start runId={} sessionId={} model={} memoryReview={} kbHits={}",
                 rc.runId(), rc.sessionId(), model, pack.reviewCount(), pack.kbHits());
         // v2 流式 API：streamEvents → Flux<AgentEvent>（Delta 原生，无需 StreamOptions 开关）；
-        // RuntimeContext 显式携带 sessionId，语义同 v1 defaultSessionId 会话隔离
+        // RuntimeContext 显式携带 sessionId，语义同 v1 defaultSessionId 会话隔离；postgres 模式
+        // 额外携带 userId（tenant-{tenantId}）派生出 BaseStore namespace 与 AgentStateStore 的租户键。
         return a.streamEvents(pack.messages(),
-                        RuntimeContext.builder().sessionId(rc.sessionId()).build())
+                        RuntimeContext.builder().userId(resolvedUserId).sessionId(rc.sessionId()).build())
                 .flatMap(ev -> Mono.justOrEmpty(mapAgentEvent(ev, toolResults, toolArgs, finalReply)))
                 .doOnComplete(() -> {
                     persistSummary(rc, new StringBuilder(finalReply.get() == null ? "" : finalReply.get()));
