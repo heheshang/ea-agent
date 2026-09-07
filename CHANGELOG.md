@@ -2,7 +2,7 @@
 
 本工程变更记录，格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.0.0] - 2026-09-07
 
 ### Ontology 链路图展示优化
 
@@ -146,5 +146,6 @@
 - **容器化**：docker-compose 一键启动（PG16 + Redis7 + mock-gw + ea-app + ea-web），带健康检查与依赖编排
 - **设计文档**：总体架构 v1.4、详细设计 v1.6、全链路数据流 v1.4、Ontology-AI 设计 v0.1、技术栈设计 v0.1
 
-[Unreleased]: https://github.com/heheshang/ea-agent/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/heheshang/ea-agent/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/heheshang/ea-agent/releases/tag/1.0.0
 [0.1.0]: https://github.com/heheshang/ea-agent/releases/tag/0.1.0

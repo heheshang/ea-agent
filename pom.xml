@@ -13,7 +13,7 @@
 
   <groupId>com.eaagent</groupId>
   <artifactId>ea-agent-parent</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>1.0.0</version>
   <packaging>pom</packaging>
   <name>ea-agent-parent</name>
   <description>智能运营触达系统（EA-Agent）—— Ontology + EA-Bus + AI-Agent 后端工程</description>
