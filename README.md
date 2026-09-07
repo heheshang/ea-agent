@@ -22,23 +22,23 @@ EA-Agent 是智能运营触达平台：以**对象模型（Ontology）**为底�
 
 ## 界面截图
 
-截图来自种子数据（demo 租户）+ 本地 dev 联调环境实际运行效果。
+截图更新于 2026-09-07，来自独立演示数据库与当前前端实际运行界面，统一使用 1440 × 1100 视口。未运行 Agent 的页面如实展示空状态，不填充虚构调用数据。
 
 | 页面 | 截图 |
 |---|---|
 | **登录页** | ![登录页](docs/screenshots/login.png) |
-| **Agent 工作台**：auto / suggest 双模式，AI 对话自动执行运营任务（圈选人群 → 核对规模 → 多通道触达），右侧实时展示工具链路 | ![Agent 工作台](docs/screenshots/workbench.png) |
-| **聊天内 HITL 批注**：查看待审模板原文、保存批注、展开历史，并将反馈带入聊天框 | ![聊天内 HITL 批注](docs/screenshots/hitl-chat.webp) |
-| **运营活动**：人群 + 触发规则列表，展示活动状态、通道、目标人群与「DAG · N」编排徽标 | ![运营活动列表](docs/screenshots/campaigns.png) |
-| **DAG 编排画布**：活动编辑内的多通道编排（分支条件 + 通道节点，拓扑序执行） | ![DAG 编排画布](docs/screenshots/campaign-dag.png) |
+| **Agent 工作台**：直接执行 / 建议确认双模式、任务输入、最近聊天与执行历史入口 | ![Agent 工作台](docs/screenshots/workbench.png) |
+| **聊天内 HITL 批注**：查看模板原文、运营批注及人工驳回历史 | ![聊天内 HITL 批注](docs/screenshots/hitl-chat.webp) |
+| **运营活动**：活动状态、通道、人群及触发规则列表 | ![运营活动列表](docs/screenshots/campaigns.png) |
+| **DAG 编排配置**：活动编辑表单中的 JSON 节点配置示例（编辑中） | ![DAG 编排配置](docs/screenshots/campaign-dag.png) |
 | **客户管理**：客户画像（标签 / 属性 / 状态）+ 模糊搜索 + 分页 | ![客户管理](docs/screenshots/customers.png) |
 | **消息模板**：模板审核流（DRAFT → PENDING → APPROVED），Agent 自动建模板产物进入审核 | ![消息模板](docs/screenshots/templates.png) |
 | **模板人工审核**：REVIEWER 驳回后显示新状态与版本，历史保留运营批注、审核决定及当时原文 | ![模板 HITL 审核历史](docs/screenshots/hitl-review.webp) |
-| **统计看板**：触达统计 + Ontology 调用链路摘要（调用 / 失败 / 热点工具 TOP5） | ![统计看板](docs/screenshots/stats.png) |
+| **统计看板**：Agent 运行、Token、成本、工具调用及 Ontology 调用链路摘要（无运行数据状态） | ![统计看板](docs/screenshots/stats.png) |
 | **知识库**：租户维度业务规则与事实条目（决策 / 约束 / 反模式 / 取代链），对话时按相关度注入 | ![知识库](docs/screenshots/knowledge.png) |
-| **Ontology 调用链路**：流程图 5 泳道 + 调用链回放（逐步点亮真实调用路径） | ![Ontology 链路](docs/screenshots/ontology.png) |
+| **Ontology 调用链路**：引擎、知识库、工具、Action、Function 与对象的静态拓扑（画布自适应容器宽度，实线/虚线/红色回放路径三类连线，节点点击聚焦详情，执行回放步骤条定位） | ![Ontology 链路](docs/screenshots/ontology.png) |
 
-HITL 截图来自独立联调数据库的真实操作。模板中的 HTML 字符串是安全渲染验证样例，按普通文本展示，不会作为 HTML 执行。
+HITL 截图展示演示模板的真实批注与驳回操作，历史保留审核时的模板原文；不包含业务数据或安全测试文本。
 
 ## 核心能力详解
 

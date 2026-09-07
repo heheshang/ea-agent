@@ -36,9 +36,40 @@ const days = ref(30)
 const loading = ref(false)
 const data = ref<OntologyGraphData | null>(null)
 
+const nodesById = computed(() => new Map((data.value?.nodes ?? []).map((n) => [n.id, n])))
 function nodeById(id: string): OntologyNode | undefined {
-  return data.value?.nodes.find((n) => n.id === id)
+  return nodesById.value.get(id)
 }
+
+const showStatic = ref(false)
+const selectedNodeId = ref<string | null>(null)
+const selectedNode = computed(() => selectedNodeId.value ? nodeById(selectedNodeId.value) : undefined)
+const connectedNodes = computed(() => {
+  const ids = new Set<string>()
+  if (!selectedNodeId.value) return ids
+  ids.add(selectedNodeId.value)
+  for (const edge of data.value?.edges ?? []) {
+    if (edge.from === selectedNodeId.value || edge.to === selectedNodeId.value) {
+      ids.add(edge.from)
+      ids.add(edge.to)
+    }
+  }
+  return ids
+})
+const activeNodeCount = computed(() => (data.value?.nodes ?? []).filter((n) => (n.calls ?? 0) > 0).length)
+const graphViewport = ref<HTMLElement | null>(null)
+const viewportWidth = ref(0)
+const fitGraph = ref(true)
+const graphScale = computed(() => fitGraph.value && viewportWidth.value
+  ? Math.min(1, viewportWidth.value / flow.value.w) : 1)
+let graphObserver: ResizeObserver | undefined
+watch(graphViewport, (element) => {
+  graphObserver?.disconnect()
+  if (!element) return
+  viewportWidth.value = element.clientWidth
+  graphObserver = new ResizeObserver(([entry]) => { viewportWidth.value = entry!.contentRect.width })
+  graphObserver.observe(element)
+})
 
 function layerNodes(type: OntologyNode['type']): OntologyNode[] {
   return (data.value?.nodes ?? []).filter((n) => n.type === type)
@@ -49,7 +80,7 @@ function fmtInt(v: number | undefined | null): string {
   return new Intl.NumberFormat('en-US').format(v)
 }
 
-/** 流程图布局：5 条纵向泳道（引擎/工具/Action/Function/对象），SVG 正交折线 + 箭头 */
+/** 六条纵向泳道；节点与端口共享尺寸，缩放时连线与卡片保持对齐。 */
 interface FlowNode {
   id: string
   kind: OntologyNode['type']
@@ -69,11 +100,11 @@ interface FlowEdge {
   ly: number
 }
 const FLOW_KINDS: OntologyNode['type'][] = ['engine', 'kb', 'tool', 'action', 'function', 'object']
-const COL_W: Record<OntologyNode['type'], number> = { engine: 120, kb: 160, tool: 198, action: 198, function: 198, object: 200 }
-const BOX_W: Record<OntologyNode['type'], number> = { engine: 112, kb: 150, tool: 190, action: 190, function: 190, object: 186 }
-const BOX_H: Record<OntologyNode['type'], number> = { engine: 44, kb: 54, tool: 54, action: 54, function: 54, object: 62 }
-const ROW_H = 78
-const PAD_T = 44
+const COL_W: Record<OntologyNode['type'], number> = { engine: 132, kb: 152, tool: 184, action: 184, function: 184, object: 184 }
+const BOX_W = COL_W
+const BOX_H: Record<OntologyNode['type'], number> = { engine: 72, kb: 72, tool: 72, action: 72, function: 72, object: 72 }
+const ROW_H = 100
+const PAD_T = 64
 
 const flow = computed(() => {
   let x = 24
@@ -82,8 +113,7 @@ const flow = computed(() => {
     colX[k] = x
     x += COL_W[k] + 30
   }
-  // 节点 div 实际渲染高度（端口均布以可见盒为准，避免多出端口溢出盒下沿）
-  const PORT_H: Record<OntologyNode['type'], number> = { engine: 48, kb: 36, tool: 36, action: 36, function: 36, object: 56 }
+  const PORT_H = BOX_H
   const nodes: FlowNode[] = []
   const pos = new Map<string, { cx: number; cy: number; w: number; kind: OntologyNode['type']; y: number }>()
   let rows = 1
@@ -185,6 +215,9 @@ const flow = computed(() => {
   })
   const cols = FLOW_KINDS.map((k) => ({
     x: colX[k]!,
+    kind: k,
+    width: BOX_W[k],
+    count: layerNodes(k).length,
     label: k === 'engine' ? '引擎' : k === 'kb' ? '知识库' : k === 'tool' ? '工具' : k === 'action' ? 'Action' : k === 'function' ? 'Function' : '对象',
   }))
   return { w: x - 30 + 24, h: PAD_T + rows * ROW_H + 24, nodes, edges, cols }
@@ -510,6 +543,25 @@ const traceCurrentNodes = computed(() =>
   step.value >= 0 && step.value < trace.value.length ? stepNodes(trace.value[step.value]!) : [],
 )
 
+const visibleEdges = computed(() => flow.value.edges.filter((e) =>
+  showStatic.value || (e.calls ?? 0) > 0 || traceEdges.value.has(`${e.from}|${e.to}`)
+  || e.from === selectedNodeId.value || e.to === selectedNodeId.value,
+))
+function seekTrace(value: number) {
+  playing.value = false
+  step.value = value
+}
+
+watch(traceTarget, () => {
+  resetTrace()
+  stopPoll()
+  trace.value = []
+  runId.value = null
+  campaignId.value = null
+  campaignInfo.value = null
+  runStatus.value = ''
+})
+
 function togglePlay() {
   if (playing.value) {
     playing.value = false
@@ -543,6 +595,7 @@ watch([playing, speed], ([p]) => {
 })
 
 onBeforeUnmount(() => {
+  graphObserver?.disconnect()
   stopPoll()
   if (traceTimer !== undefined) window.clearInterval(traceTimer)
 })
@@ -559,7 +612,7 @@ onMounted(() => {
     <div class="page-head">
       <div>
         <div class="page-title">Ontology 调用链路</div>
-        <div class="page-sub">流程图：引擎 → 工具（7）→ Action（6）/ Function（5）→ 对象（7）｜实线 = 有调用；虚线 = 未激活（静态拓扑）</div>
+        <div class="page-sub">从引擎到业务对象，查看调用热点、追踪执行步骤与探索数据关系。</div>
       </div>
       <div class="head-right">
         <el-radio-group v-model="days" @change="load">
@@ -567,17 +620,18 @@ onMounted(() => {
           <el-radio-button :value="30">近 30 天</el-radio-button>
           <el-radio-button :value="90">近 90 天</el-radio-button>
         </el-radio-group>
-        <span class="legend">
-          <span class="lg lg-blue">引擎</span><span class="lg lg-green">工具</span
-          ><span class="lg lg-orange">Action</span><span class="lg lg-cyan">Function</span><span class="lg lg-purple">对象</span>
-          <span class="lg-tip">— 实线 = 有调用；虚线 = 未激活（静态拓扑）</span>
-        </span>
       </div>
     </div>
 
+    <div v-if="data" class="graph-summary">
+      <span><strong>{{ data.nodes.length }}</strong> 个节点</span>
+      <span><strong>{{ activeNodeCount }}</strong> 个有调用节点</span>
+      <span><strong>{{ data.edges.length }}</strong> 条已定义关系</span>
+      <span class="summary-scope">统计范围 · 近 {{ days }} 天</span>
+    </div>
     <!-- 调用链回放：选一次 run（引擎 → 工具 → Action/Function → 对象）或一个运营活动（动作史逐步点亮），复用播放管线 -->
     <el-card v-if="data" shadow="never" class="trace-card">
-      <template #header><span class="overview-title">调用链回放 · 运营活动</span></template>
+      <template #header><span class="overview-title">执行回放</span><span class="section-hint">选择运行或活动，逐步查看经过的节点</span></template>
       <div class="trace-bar">
         <el-radio-group v-model="traceTarget" size="small">
           <el-radio-button value="run">Run 调用链</el-radio-button>
@@ -587,7 +641,7 @@ onMounted(() => {
           v-if="traceTarget === 'run'"
           v-model="runId"
           placeholder="选择一次 run 回放"
-          style="width: 360px"
+          class="trace-select"
           :loading="runsLoading"
           filterable
           @change="onRunChange"
@@ -598,7 +652,7 @@ onMounted(() => {
           v-else
           v-model="campaignId"
           placeholder="选择运营活动回放"
-          style="width: 360px"
+          class="trace-select"
           :loading="campaignsLoading"
           filterable
           @change="onCampaignChange"
@@ -609,12 +663,12 @@ onMounted(() => {
           活动 #{{ campaignInfo.id }} · {{ campaignInfo.name }}{{ campaignInfo.status ? `（${campaignInfo.status}）` : '' }}
         </span>
         <el-button-group>
-          <el-button :disabled="!trace.length" title="重置" @click="resetTrace">⏮</el-button>
+          <el-button :disabled="!trace.length" @click="resetTrace">重置</el-button>
           <el-button
             :disabled="!trace.length"
             :type="playing ? 'warning' : 'primary'"
             @click="togglePlay"
-          >{{ playing ? '⏸ 暂停' : '▶ 播放' }}</el-button>
+          >{{ playing ? '暂停' : '播放' }}</el-button>
         </el-button-group>
         <span v-if="trace.length" class="step-text">
           第 {{ step < 0 ? 0 : Math.min(step + 1, trace.length) }} / {{ trace.length }} 步
@@ -631,38 +685,64 @@ onMounted(() => {
           <el-radio-button :value="4">×4</el-radio-button>
         </el-radio-group>
         <span v-if="!trace.length && runId && traceTarget === 'run'" class="trace-empty">
-          {{ isRunning(runStatus) ? '该 run 执行中：调用链实时更新，完成后可完整回放…' : '该 run 无工具调用明细（V5 迁移前的存量 run）' }}
+          {{ isRunning(runStatus) ? '执行中，等待调用明细；链路会实时更新。' : '该运行暂无工具调用明细。' }}
         </span>
         <span v-if="!trace.length && campaignId && traceTarget === 'campaign'" class="trace-empty">
           该运营活动暂无已执行的 ontology 动作
         </span>
         <span v-if="trace.length && traceTarget === 'run' && isRunning(runStatus)" class="step-live">执行中 · 实时更新</span>
       </div>
+      <p v-if="!runId && !campaignId" class="trace-hint">{{ traceTarget === 'run' && !runs.length ? '暂无运行记录。可先在 Agent 工作台执行任务，或切换到运营活动查看动作历史。' : '选择回放目标后，播放控件和步骤导航将启用。' }}</p>
+      <div v-if="trace.length" class="trace-steps" aria-label="回放步骤">
+        <button v-for="(call, index) in trace" :key="call.seq" type="button"
+          :class="{ current: step === index, visited: index < step, failed: call.ok === false }"
+          :aria-pressed="step === index" @click="seekTrace(index)">
+          <span>{{ index + 1 }}</span>{{ call.kind === 'kb' ? '知识库检索' : call.target || call.name }}
+          <small v-if="call.ok === false">失败</small>
+        </button>
+      </div>
+      <p v-if="step >= 0 && trace[step]?.error" class="step-fail" role="status">{{ trace[step]?.error }}</p>
     </el-card>
 
-    <div v-if="data" class="flow" :key="days">
-      <svg class="flow-svg" :width="flow.w" :height="flow.h">
+    <section v-if="data" class="graph-card" aria-label="Ontology 关系图">
+      <div class="graph-toolbar">
+        <div><span class="overview-title">关系拓扑</span><span class="section-hint">点击节点聚焦关联关系</span></div>
+        <div class="graph-controls">
+          <el-switch v-model="showStatic" active-text="显示静态关系" />
+          <el-button size="small" @click="fitGraph = !fitGraph">{{ fitGraph ? '原始大小' : '适应宽度' }}</el-button>
+          <span class="scale-label">{{ Math.round(graphScale * 100) }}%</span>
+        </div>
+      </div>
+      <div class="graph-legend">
+        <span><i class="line-key active" />有调用</span><span><i class="line-key" />静态关系</span>
+        <span><i class="line-key playback" />回放路径</span>
+        <span v-if="!activeNodeCount" class="empty-graph-note">本时间范围暂无调用，节点仍可点击查看关系。</span>
+      </div>
+      <div ref="graphViewport" class="flow">
+      <div :style="{ width: flow.w * graphScale + 'px', height: flow.h * graphScale + 'px' }">
+      <div class="flow-canvas" :style="{ width: flow.w + 'px', height: flow.h + 'px', transform: `scale(${graphScale})` }">
+      <svg class="flow-svg" :width="flow.w" :height="flow.h" aria-hidden="true">
         <defs>
           <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
-            <path d="M0,0 L9,4.5 L0,9 Z" fill="#4e5969" />
+            <path d="M0,0 L9,4.5 L0,9 Z" fill="context-stroke" />
           </marker>
           <marker id="arr-dead" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
             <path d="M0,0 L9,4.5 L0,9 Z" fill="#c9cdd4" />
           </marker>
         </defs>
         <path
-          v-for="e in flow.edges"
+          v-for="e in visibleEdges"
           :key="e.d + e.lx"
           class="edge-line"
-          :class="{ dead: !traceEdges.has(e.from + '|' + e.to), 'trace-active': traceEdges.has(e.from + '|' + e.to) }"
+          :class="{ dead: !e.calls && !traceEdges.has(e.from + '|' + e.to), 'trace-active': traceEdges.has(e.from + '|' + e.to), muted: selectedNodeId && e.from !== selectedNodeId && e.to !== selectedNodeId }"
           :d="e.d"
-          :marker-end="traceEdges.has(e.from + '|' + e.to) ? 'url(#arr)' : 'url(#arr-dead)'"
+          :marker-end="e.calls || traceEdges.has(e.from + '|' + e.to) ? 'url(#arr)' : 'url(#arr-dead)'"
         />
-        <template v-for="e in flow.edges" :key="'f' + e.d + e.lx">
+        <template v-for="e in visibleEdges" :key="'f' + e.d + e.lx">
           <path v-if="traceEdges.has(e.from + '|' + e.to)" class="edge-line-flow" :d="e.d" />
         </template>
         <text
-          v-for="e in flow.edges.filter((x) => x.showLabel)"
+          v-for="e in visibleEdges.filter((x) => x.showLabel && (!selectedNodeId || x.from === selectedNodeId || x.to === selectedNodeId))"
           :key="'l' + e.d + e.lx"
           class="e-label"
           :x="e.lx"
@@ -670,24 +750,27 @@ onMounted(() => {
           text-anchor="middle"
         >×{{ fmtInt(e.calls) }}<tspan v-if="e.avg_ms" dx="4" class="e-ms">{{ fmtInt(e.avg_ms) }}ms</tspan></text>
       </svg>
-      <div v-for="c in flow.cols" :key="c.label" class="col-title" :style="{ left: c.x + 'px' }">{{ c.label }}</div>
-      <div
+      <div v-for="c in flow.cols" :key="c.kind" class="col-title" :class="c.kind" :style="{ left: c.x + 'px', width: c.width + 'px' }">{{ c.label }}<span>{{ c.count }}</span></div>
+      <button
         v-for="n in flow.nodes"
         :key="n.id"
+        type="button"
         class="node node-abs"
         :class="[
           n.kind,
-          { dead: n.kind !== 'object' && !nodeById(n.id)?.calls, clickable: n.kind === 'object' },
+          { dead: n.kind !== 'object' && !nodeById(n.id)?.calls, selected: selectedNodeId === n.id, muted: selectedNodeId && !connectedNodes.has(n.id) },
           {
             'trace-current': traceCurrentNodes.includes(n.id),
             'trace-visited': !traceCurrentNodes.includes(n.id) && traceVisitedNodes.has(n.id),
           },
         ]"
-        :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px' }"
-        :title="n.kind === 'object' ? '点击下钻数据' : undefined"
-        @click="n.kind === 'object' && nodeById(n.id) ? openDrill(nodeById(n.id)!) : undefined"
+        :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px' }"
+        :title="nodeById(n.id)?.label"
+        :aria-pressed="selectedNodeId === n.id"
+        @click="selectedNodeId = selectedNodeId === n.id ? null : n.id"
       >
         <span class="n-label">{{ nodeById(n.id)?.label }}</span>
+        <span class="node-metrics">
         <template v-if="n.kind === 'object'">
           <span class="badge">记录 {{ fmtInt(nodeById(n.id)?.count ?? 0) }}</span>
           <span class="badge">字段 {{ fmtInt(nodeById(n.id)?.fields ?? 0) }}</span>
@@ -695,9 +778,21 @@ onMounted(() => {
         <template v-else>
           <span class="badge hot" v-if="nodeById(n.id)?.calls">×{{ fmtInt(nodeById(n.id)?.calls ?? 0) }}<i v-if="nodeById(n.id)?.avg_ms">{{ fmtInt(nodeById(n.id)?.avg_ms ?? 0) }}ms</i></span>
           <span class="badge fail" v-if="nodeById(n.id)?.fails">✗{{ fmtInt(nodeById(n.id)?.fails ?? 0) }}</span>
+          <span v-if="!nodeById(n.id)?.calls" class="node-idle">暂无调用</span>
         </template>
+        </span>
+      </button>
       </div>
-    </div>
+      </div>
+      </div>
+      <div v-if="selectedNode" class="node-detail">
+        <div><strong>{{ selectedNode.label }}</strong><code>{{ selectedNode.id }}</code></div>
+        <span v-if="selectedNode.type === 'object'">{{ fmtInt(selectedNode.count ?? 0) }} 条记录 · {{ selectedNode.fields ?? 0 }} 个字段</span>
+        <span v-else>{{ fmtInt(selectedNode.calls ?? 0) }} 次调用 · 平均 {{ fmtInt(selectedNode.avg_ms ?? 0) }} ms · {{ fmtInt(selectedNode.fails ?? 0) }} 次失败</span>
+        <el-button v-if="selectedNode.type === 'object'" size="small" type="primary" @click="openDrill(selectedNode)">查看对象数据</el-button>
+        <el-button size="small" @click="selectedNodeId = null">取消聚焦</el-button>
+      </div>
+    </section>
 
     <!-- 对象数据总览：与上图共享同一次 graph 数据 -->
     <el-card v-if="data" shadow="never" class="overview-card">
@@ -779,28 +874,6 @@ onMounted(() => {
   gap: 14px;
   flex-wrap: wrap;
 }
-.legend {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: #86909c;
-}
-.lg {
-  padding: 2px 8px;
-  border-radius: 6px;
-  color: #fff;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.lg-blue { background: #3370ff; }
-.lg-green { background: #00b42a; }
-.lg-orange { background: #ff7d00; }
-.lg-cyan { background: #13c2c2; }
-.lg-purple { background: #722ed1; }
-.lg-tip { color: #c9cdd4; }
-
 .flow {
   position: relative;
   background: #fff;
@@ -811,6 +884,10 @@ onMounted(() => {
 }
 .flow-svg {
   display: block;
+}
+.flow-canvas {
+  position: relative;
+  transform-origin: top left;
 }
 .edge-line {
   fill: none;
@@ -841,28 +918,45 @@ onMounted(() => {
   font-weight: 600;
   color: #86909c;
 }
+.col-title span {
+  margin-left: 6px;
+  padding: 0 6px;
+  line-height: 15px;
+  border-radius: 8px;
+  background: #f2f3f5;
+  color: #4e5969;
+  font-size: 11px;
+  font-weight: 500;
+}
 .node-abs {
   position: absolute;
-  justify-content: center;
   box-sizing: border-box;
-}
-.node-abs.object {
-  flex-wrap: wrap;
-  row-gap: 2px;
 }
 .node {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 5px;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid;
   font-size: 13px;
-  white-space: nowrap;
+  cursor: pointer;
+  text-align: left;
+  transition: box-shadow 0.15s ease, opacity 0.15s ease;
+}
+.node:hover {
+  box-shadow: 0 2px 10px rgba(29, 33, 41, 0.14);
 }
 .node .n-label {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
   color: #1d2129;
+  line-height: 1.3;
 }
 .node.engine {
   background: #eef4ff;
@@ -912,6 +1006,16 @@ onMounted(() => {
   color: #3370ff;
 }
 .badge.hot i { color: #3370ff; }
+.node-metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.node-idle {
+  font-size: 11px;
+  color: #c9cdd4;
+}
 
 .edge-line.trace-active {
   stroke: #d81e06;
@@ -942,6 +1046,18 @@ onMounted(() => {
 .node-abs.trace-visited {
   outline: 2px solid rgba(216, 30, 6, 0.45);
   outline-offset: 1px;
+}
+.node.selected {
+  outline: 3px solid #3370ff;
+  outline-offset: 2px;
+  box-shadow: 0 0 14px rgba(51, 112, 255, 0.35);
+  z-index: 3;
+}
+.node.muted {
+  opacity: 0.25;
+}
+.edge-line.muted {
+  opacity: 0.1;
 }
 .trace-card {
   border-radius: 12px;
@@ -982,6 +1098,179 @@ onMounted(() => {
   font-size: 12px;
   color: #d46b08;
   margin-left: 8px;
+}
+.trace-hint {
+  font-size: 12px;
+  color: #86909c;
+  margin: 10px 0 0;
+}
+.trace-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.trace-steps button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #4e5969;
+  background: #f7f8fa;
+  border: 1px solid #e5e6eb;
+  border-radius: 14px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.trace-steps button span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #e5e6eb;
+  color: #4e5969;
+  font-size: 11px;
+}
+.trace-steps button:hover {
+  border-color: #c9cdd4;
+}
+.trace-steps button.current {
+  background: #d81e06;
+  border-color: #d81e06;
+  color: #fff;
+}
+.trace-steps button.current span {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.trace-steps button.visited {
+  background: #fff1f0;
+  border-color: #fadbd9;
+  color: #d81e06;
+}
+.trace-steps button.failed {
+  color: #f53f3f;
+  font-weight: 600;
+}
+.trace-steps button small {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.graph-card {
+  background: #fff;
+  border: 1px solid #f0f1f3;
+  border-radius: 12px;
+  box-shadow: var(--db-card-shadow);
+  padding: 16px;
+}
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.graph-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.scale-label {
+  font-size: 12px;
+  color: #86909c;
+  min-width: 38px;
+  text-align: right;
+}
+.graph-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #4e5969;
+  margin-bottom: 10px;
+}
+.line-key {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  border-top: 2px solid #4e5969;
+  margin-right: 6px;
+  vertical-align: 2px;
+}
+.line-key:not(.active):not(.playback) {
+  border-top-style: dashed;
+  border-top-color: #c9cdd4;
+}
+.line-key.playback {
+  border-top: 2px solid #d81e06;
+}
+.empty-graph-note {
+  color: #86909c;
+  margin-left: auto;
+}
+.graph-summary {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #86909c;
+  background: #f7f8fa;
+  border: 1px solid #f0f1f3;
+  border-radius: 12px;
+  padding: 10px 16px;
+}
+.graph-summary strong {
+  color: #1d2129;
+  font-size: 15px;
+  margin-right: 3px;
+}
+.summary-scope {
+  margin-left: auto;
+  font-size: 12px;
+  color: #86909c;
+}
+.section-hint {
+  font-size: 12px;
+  color: #86909c;
+  font-weight: 400;
+  margin-left: 8px;
+}
+.node-detail {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #f7f8fa;
+  border: 1px solid #e5e6eb;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #86909c;
+}
+.node-detail strong {
+  color: #1d2129;
+}
+.node-detail code {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #86909c;
+  background: #fff;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.node-detail .el-button + .el-button {
+  margin-left: 8px;
+}
+.node-detail .el-button:first-of-type {
+  margin-left: auto;
 }
 
 .overview-card {
