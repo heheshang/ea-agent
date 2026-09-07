@@ -11,6 +11,20 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 /** agent 创建活动必须携带触发规则：createCampaign 缺省/空白 trigger_rule 拒绝，其余动作放行。 */
 class AgentToolRegistryTest {
 
+    @Test
+    void approvalModeFailureCannotExecuteWriteAction() {
+        var redis = org.mockito.Mockito.mock(org.springframework.data.redis.core.StringRedisTemplate.class);
+        var actions = org.mockito.Mockito.mock(com.eaagent.ontology.action.ActionRegistry.class);
+        org.mockito.Mockito.when(actions.all()).thenReturn(Map.of());
+        var registry = new AgentToolRegistry(null, null, null, null, null, actions,
+                null, null, null, redis);
+        org.mockito.Mockito.when(redis.opsForValue()).thenThrow(new IllegalStateException("redis unavailable"));
+        var tool = registry.new ApplyAction(1L, 2L, "OPERATOR", "chat-3");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> tool.execute(Map.of("action", "pauseCampaign", "args", Map.of("campaign_id", 7L))));
+        org.mockito.Mockito.verify(actions, org.mockito.Mockito.never()).get(org.mockito.ArgumentMatchers.anyString());
+    }
+
     private static Map<String, Object> rule(Object triggerRule) {
         Map<String, Object> args = new LinkedHashMap<>();
         args.put("name", "x");

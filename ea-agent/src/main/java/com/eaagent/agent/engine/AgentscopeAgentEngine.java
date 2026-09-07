@@ -220,6 +220,8 @@ public class AgentscopeAgentEngine implements AgentEngine {
         List<AgentRunEntity> history = runMapper.selectList(new QueryWrapper<AgentRunEntity>()
                 .select(AgentRunEntity.COL_ID, AgentRunEntity.COL_GOAL, AgentRunEntity.COL_STATUS, AgentRunEntity.COL_SUMMARY)
                 .eq(AgentRunEntity.COL_TENANT_ID, rc.tenantId())
+                .eq(AgentRunEntity.COL_USER_ID, rc.userId())
+                .eq(rc.chatId() != null, AgentRunEntity.COL_CHAT_ID, rc.chatId())
                 .eq(AgentRunEntity.COL_SESSION_ID, rc.sessionId())
                 .ne(AgentRunEntity.COL_STATUS, AgentRunEntity.STATUS_NEW)
                 .ne(AgentRunEntity.COL_ID, Long.valueOf(rc.runId()))
@@ -285,20 +287,19 @@ public class AgentscopeAgentEngine implements AgentEngine {
 
     @Override
     public Flux<EngineEvent> stream(RunContext rc, String userInput) {
-        // 多租户存储后端：postgres 模式下用 PG DistributedStore 并开启多租户隔离（userId=tenant-{id}）。
-        // filesystem 模式（默认）不接线、userId=null，行为逐字保留（零回归）。
+        // 缓存、持久化状态与本地工作目录都按租户/用户隔离。
         PgDistributedStore pgStore = null;
         if ("postgres".equals(fileStore)) {
             pgStore = pgStoreProvider.getIfAvailable();
             if (pgStore == null) {
-                log.warn("file-store=postgres 但 PgDistributedStore 未装配，退化为本地 filesystem 存储");
+                throw new IllegalStateException("PostgreSQL agent store unavailable");
             }
         }
         final boolean pg = pgStore != null;
         final PgDistributedStore resolvedPgStore = pgStore;
-        final String sessionCacheKey = pg ? rc.tenantId() + ":" + rc.sessionId() : rc.sessionId();
-        final String tenantUserId = pg ? "tenant-" + rc.tenantId() : null;
-        final String resolvedUserId = tenantUserId == null ? null : tenantUserId;
+        final String resolvedUserId = "tenant-" + rc.tenantId() + "-user-" + rc.userId();
+        final String runtimeSessionId = rc.chatId() == null ? rc.sessionId() : "chat-" + rc.chatId();
+        final String sessionCacheKey = resolvedUserId + ":" + rc.role() + ":" + runtimeSessionId;
         HarnessAgent a = sessions.computeIfAbsent(sessionCacheKey, sid -> {
             Toolkit tk = new Toolkit();
             for (AgentTool t : toolRegistry.forTenant(rc.tenantId(), rc.userId(), rc.role(), rc.sessionId())) {
@@ -320,10 +321,10 @@ public class AgentscopeAgentEngine implements AgentEngine {
                     .description("智能运营助手")
                     .sysPrompt(SYS_PROMPT)
                     .model(resolveModel())
-                    .workspace(Paths.get(workspace).toAbsolutePath())
+                    .workspace(Paths.get(workspace).toAbsolutePath().resolve(resolvedUserId))
                     .toolkit(tk)
                     .skillRepositories(skillRepos)
-                    .defaultSessionId(sid)
+                    .defaultSessionId(runtimeSessionId)
                     .middleware(statsMw)
                     .disableFilesystemTools()
                     .disableShellTool()
@@ -341,14 +342,14 @@ public class AgentscopeAgentEngine implements AgentEngine {
         // 无人值守运营引擎无 HITL 通道，ASK 会使工具调用悬空（发 RequireUserConfirmEvent +
         // RequestStopEvent，工具实际不执行）。切 BYPASS：全部放行（库级 API，持久化到会话槽，
         // 后续同会话调用保持）。
-        a.setPermissionMode(resolvedUserId, rc.sessionId(), io.agentscope.core.permission.PermissionMode.BYPASS);
+        a.setPermissionMode(resolvedUserId, runtimeSessionId, io.agentscope.core.permission.PermissionMode.BYPASS);
         RunStatsMiddleware statsMw = statses.get(sessionCacheKey);
         AtomicReference<String> finalReply = new AtomicReference<>();
         Map<String, StringBuilder> toolResults = new HashMap<>();
         Map<String, StringBuilder> toolArgs = new HashMap<>();
         if (statsMw != null) {
             // 先绑定租户/run 上下文，知识库检索（withSessionMemory）完成后 recordKb 实时落库首步
-            statsMw.begin(rc.tenantId(), Long.valueOf(rc.runId()));
+            statsMw.begin(rc.tenantId(), Long.valueOf(rc.runId()), rc.chatId());
         }
         MemoryPack pack = withSessionMemory(rc, userInput, statsMw);
         if (statsMw != null) {
@@ -357,10 +358,9 @@ public class AgentscopeAgentEngine implements AgentEngine {
         log.info("stream start runId={} sessionId={} model={} memoryReview={} kbHits={}",
                 rc.runId(), rc.sessionId(), model, pack.reviewCount(), pack.kbHits());
         // v2 流式 API：streamEvents → Flux<AgentEvent>（Delta 原生，无需 StreamOptions 开关）；
-        // RuntimeContext 显式携带 sessionId，语义同 v1 defaultSessionId 会话隔离；postgres 模式
-        // 额外携带 userId（tenant-{tenantId}）派生出 BaseStore namespace 与 AgentStateStore 的租户键。
+        // userId 隔离租户/用户，runtimeSessionId 隔离聊天；不读取旧租户共享状态。
         return a.streamEvents(pack.messages(),
-                        RuntimeContext.builder().userId(resolvedUserId).sessionId(rc.sessionId()).build())
+                        RuntimeContext.builder().userId(resolvedUserId).sessionId(runtimeSessionId).build())
                 .flatMap(ev -> Mono.justOrEmpty(mapAgentEvent(ev, toolResults, toolArgs, finalReply)))
                 .doOnComplete(() -> {
                     persistSummary(rc, new StringBuilder(finalReply.get() == null ? "" : finalReply.get()));
@@ -411,7 +411,7 @@ public class AgentscopeAgentEngine implements AgentEngine {
                 continue;
             }
             toolCallMapper.insert(RunStatsMiddleware.toEntity(
-                    rc.tenantId(), Long.valueOf(rc.runId()), tc));
+                    rc.tenantId(), Long.valueOf(rc.runId()), rc.chatId(), tc));
         }
         Number input = (Number) usage.get("input_tokens");
         Number output = (Number) usage.get("output_tokens");

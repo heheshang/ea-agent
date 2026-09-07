@@ -30,6 +30,7 @@ http.interceptors.response.use(
       // 10003（FORBIDDEN）是业务级无权限（如门控非发起者），只提示，绝不登出。
       if (body.code === 10002 || body.code === 11003) {
         localStorage.removeItem('ea:token')
+        localStorage.removeItem('ea.session_id')
         if (!location.pathname.startsWith('/login')) {
           location.href = '/login'
         }
@@ -42,6 +43,7 @@ http.interceptors.response.use(
     // HTTP 401（token 过期/无效、租户失效/不匹配）：清 token 回登录页，与业务码分支一致
     if (error?.response?.status === 401) {
       localStorage.removeItem('ea:token')
+      localStorage.removeItem('ea.session_id')
       if (!location.pathname.startsWith('/login')) {
         location.href = '/login'
       }

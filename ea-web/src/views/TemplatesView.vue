@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useAuthStore } from '../stores/auth'
+import TemplateReviewPanel from '../components/TemplateReviewPanel.vue'
 import {
-  approveTemplate, createTemplate, deleteTemplate, listTemplates, rejectTemplate, submitTemplate, updateTemplate,
+  createTemplate, deleteTemplate, listTemplates, submitTemplate, updateTemplate,
 } from '../api/templates'
 import type { Template } from '../api/types'
 
-const auth = useAuthStore()
+const reviewing = ref<Template | null>(null)
 const CHANNEL_LABELS: Record<string, string> = {
   sms: '短信',
   email: '邮件',
@@ -97,17 +97,6 @@ async function submit(row: Template) {
   load()
 }
 
-async function approve(row: Template) {
-  await approveTemplate(row.id)
-  ElMessage.success('已通过')
-  load()
-}
-
-async function reject(row: Template) {
-  await rejectTemplate(row.id)
-  ElMessage.success('已驳回')
-  load()
-}
 
 async function remove(row: Template) {
   await ElMessageBox.confirm(`确认删除模板「${row.title}」？被活动引用的模板不可删除。`, '删除确认', { type: 'warning' })
@@ -125,9 +114,9 @@ onMounted(load)
 <template>
   <el-card shadow="never">
     <template #header>
-      <div style="display: flex; justify-content: space-between; align-items: center">
-        <span>消息模板（{{ templates.length }}）· 审核流 DRAFT→PENDING→APPROVED</span>
-        <div style="display: flex; gap: 10px">
+      <div class="resource-heading">
+        <div><h1>消息模板 <span class="resource-count">{{ templates.length }}</span></h1><p>沉淀触达内容，协同完成草稿、审核与发布</p></div>
+        <div class="resource-actions">
           <el-input v-model="filter" placeholder="按标题/通道筛选" clearable style="width: 180px" />
           <el-button type="primary" size="small" @click="openCreate">新建模板</el-button>
           <el-button size="small" :loading="loading" @click="load">刷新</el-button>
@@ -152,20 +141,21 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" @click="reviewing = row">批注 / 审核</el-button>
           <template v-if="['DRAFT', 'REJECTED'].includes(row.reviewStatus)">
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="primary" @click="submit(row)">提交审核</el-button>
             <el-button size="small" type="danger" plain @click="remove(row)">删除</el-button>
-          </template>
-          <template v-else-if="row.reviewStatus === 'PENDING' && auth.role === 'REVIEWER'">
-            <el-button size="small" type="success" @click="approve(row)">通过</el-button>
-            <el-button size="small" type="danger" @click="reject(row)">驳回</el-button>
           </template>
           <span v-else style="color: #c0c4cc; font-size: 12px">{{ row.reviewStatus === 'PENDING' ? '待 REVIEWER 审核' : '已定稿' }}</span>
         </template>
       </el-table-column>
     </el-table>
   </el-card>
+
+  <el-dialog :model-value="reviewing !== null" title="模板人工审核（HITL）" width="720px" destroy-on-close @close="reviewing = null">
+    <TemplateReviewPanel v-if="reviewing" :template-id="reviewing.id" @reviewed="load" />
+  </el-dialog>
 
   <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑模板' : '新建模板'" width="620px" destroy-on-close>
     <el-form label-width="80px">

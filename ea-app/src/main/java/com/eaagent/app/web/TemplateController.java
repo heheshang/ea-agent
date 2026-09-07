@@ -1,10 +1,12 @@
 package com.eaagent.app.web;
 
 import com.eaagent.api.dto.TemplateWriteRequest;
+import com.eaagent.api.dto.TemplateReviewRequest;
 import com.eaagent.app.service.TemplateService;
 import com.eaagent.common.Result;
 import com.eaagent.common.TenantContext;
 import com.eaagent.ontology.model.TemplateEntity;
+import com.eaagent.ontology.model.TemplateReviewEntity;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,7 +22,7 @@ import java.util.List;
 
 /**
  * 模板管理（/api/templates）：租户维度 CRUD + 审核流
- * （submit 提交 PENDING → Review REVIEWER 审批）。写操作 OPERATOR、审批 REVIEWER。
+ * （submit 提交 PENDING → REVIEWER 人工终审）；批注允许当前登录用户保存。
  */
 @RestController
 @RequestMapping("/api/templates")
@@ -59,18 +61,16 @@ public class TemplateController {
         return Result.ok(templateService.submit(TenantContext.requiredTenantId(), id));
     }
 
-    /** 通过：REVIEWER；PENDING → APPROVED。 */
-    @PostMapping("/{id}/approve")
-    public Result<TemplateEntity> approve(@PathVariable Long id) {
-        return Result.ok(templateService.review(TenantContext.requiredTenantId(), id,
-                TenantContext.role(), true));
+    @GetMapping("/{id}/reviews")
+    public Result<List<TemplateReviewEntity>> reviews(@PathVariable Long id) {
+        return Result.ok(templateService.listReviews(TenantContext.requiredTenantId(), id));
     }
 
-    /** 驳回：REVIEWER；PENDING → REJECTED。 */
-    @PostMapping("/{id}/reject")
-    public Result<TemplateEntity> reject(@PathVariable Long id) {
-        return Result.ok(templateService.review(TenantContext.requiredTenantId(), id,
-                TenantContext.role(), false));
+    @PostMapping("/{id}/reviews")
+    public Result<TemplateReviewEntity> addReview(@PathVariable Long id,
+                                                 @Valid @RequestBody TemplateReviewRequest req) {
+        return Result.ok(templateService.addReview(TenantContext.requiredTenantId(), id,
+                TenantContext.userId(), TenantContext.role(), req));
     }
 
     @DeleteMapping("/{id}")

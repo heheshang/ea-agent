@@ -280,12 +280,16 @@ interface TraceCall {
   duration_ms?: number | null
   ok?: boolean
   error?: string | null
+  /** V17：该步调用归属聊天 id（agent_tool_call.chat_id；调用链可沿聊天跨 run 追踪） */
+  chat_id?: number | null
 }
 interface RunItem {
   id: number
   createdAt?: string
   status?: string
   summary?: string
+  /** V17：run 归属聊天 id（agent_run.chat_id） */
+  chatId?: number
 }
 const runs = ref<RunItem[]>([])
 const runsLoading = ref(false)
@@ -350,7 +354,8 @@ function runTime(r: RunItem): string {
 function runLabel(r: RunItem): string {
   const s = (r.summary ?? '').replace(/\s+/g, ' ').trim()
   const brief = s.length > 22 ? s.slice(0, 22) + '…' : s
-  return `#${r.id} · ${runTime(r)} · ${brief}`
+  const chat = r.chatId ? ` · 聊天 #${r.chatId}` : ''
+  return `#${r.id}${chat} · ${runTime(r)} · ${brief}`
 }
 
 /** 运营活动下拉：`#id · 时间 · 名称 · 状态`（名称超长截断） */
@@ -553,7 +558,7 @@ onMounted(() => {
   <div v-loading="loading" class="onto-page">
     <div class="page-head">
       <div>
-        <div class="page-title">🧭 Ontology 调用链路</div>
+        <div class="page-title">Ontology 调用链路</div>
         <div class="page-sub">流程图：引擎 → 工具（7）→ Action（6）/ Function（5）→ 对象（7）｜实线 = 有调用；虚线 = 未激活（静态拓扑）</div>
       </div>
       <div class="head-right">
@@ -615,6 +620,7 @@ onMounted(() => {
           第 {{ step < 0 ? 0 : Math.min(step + 1, trace.length) }} / {{ trace.length }} 步
           <template v-if="step >= 0 && step < trace.length">
             · <b>{{ trace[step].kind === 'kb' ? '知识库检索' : trace[step].name }}</b><template v-if="trace[step].target && trace[step].target !== trace[step].name"> → {{ trace[step].target }}</template>
+            <span v-if="trace[step].chat_id" class="step-chat">聊天 #{{ trace[step].chat_id }}</span>
             <span class="step-ms">{{ trace[step].duration_ms ?? '-' }}ms</span>
             <span v-if="trace[step].ok === false" class="step-fail">✗ 失败</span>
           </template>
@@ -777,6 +783,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   font-size: 12px;
   color: #86909c;
 }
@@ -785,6 +792,7 @@ onMounted(() => {
   border-radius: 6px;
   color: #fff;
   font-size: 12px;
+  white-space: nowrap;
 }
 .lg-blue { background: #3370ff; }
 .lg-green { background: #00b42a; }
@@ -954,6 +962,12 @@ onMounted(() => {
 .step-ms {
   color: #86909c;
   margin-left: 8px;
+}
+.step-chat {
+  color: #00a64f;
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 600;
 }
 .step-fail {
   color: #f53f3f;

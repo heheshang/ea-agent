@@ -14,6 +14,7 @@ public class AgentToolCallEntity {
     public static final String COL_ID = "id";
     public static final String COL_TENANT_ID = "tenant_id";
     public static final String COL_RUN_ID = "run_id";
+    public static final String COL_CHAT_ID = "chat_id";
     public static final String COL_SEQ = "seq";
     public static final String COL_KIND = "kind";
     public static final String COL_NAME = "name";
@@ -28,6 +29,8 @@ public class AgentToolCallEntity {
     private Long id;
     private Long tenantId;
     private Long runId;
+    /** 归属聊天 id（V17 起：调用链明细可直接按聊天追踪，旧行 NULL）。 */
+    private Long chatId;
     /** run 内调用序号（1 起，ToolResultEnd 完成顺序）。 */
     private Integer seq;
     /** tool | action | function（target 非空时为 action/function）。 */

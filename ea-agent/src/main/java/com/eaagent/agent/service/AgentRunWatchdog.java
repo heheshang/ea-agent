@@ -70,14 +70,17 @@ public class AgentRunWatchdog {
             boolean neverStarted = AgentRunEntity.STATUS_NEW.equals(run.getStatus());
             String target = neverStarted ? AgentRunEntity.STATUS_CANCELLED : AgentRunEntity.STATUS_FAILED;
             try {
-                runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
+                int changed = runMapper.update(null, new UpdateWrapper<AgentRunEntity>()
                         .eq(AgentRunEntity.COL_ID, run.getId())
                         .eq(AgentRunEntity.COL_STATUS, run.getStatus())
+                        .lt(AgentRunEntity.COL_UPDATED_AT, cutoff)
                         .set(AgentRunEntity.COL_STATUS, target)
                         .set(AgentRunEntity.COL_UPDATED_AT, Instant.now()));
-                log.warn("watchdog sweep runId={} sessionId={} status={}->{} staleMs={}",
-                        run.getId(), run.getSessionId(), run.getStatus(), target,
-                        Duration.between(run.getUpdatedAt(), Instant.now()).toMillis());
+                if (changed == 1) {
+                    log.warn("watchdog sweep runId={} sessionId={} status={}->{} staleMs={}",
+                            run.getId(), run.getSessionId(), run.getStatus(), target,
+                            Duration.between(run.getUpdatedAt(), Instant.now()).toMillis());
+                }
             } catch (Exception e) {
                 log.warn("watchdog sweep failed runId={}: {}", run.getId(), e.toString());
             }

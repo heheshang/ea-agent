@@ -147,7 +147,7 @@ public class AgentToolRegistry {
                         tenantId, name, params, Texts.truncate(String.valueOf(e.getMessage()), 150),
                         (System.nanoTime() - t0) / 1_000_000L);
                 return Mono.just(new ToolResultBlock(id, name,
-                        List.of(TextBlock.builder().text("{\"error\":\"" + String.valueOf(e.getMessage()).replace("\"", "'") + "\"}").build())));
+                        List.of(TextBlock.builder().text(JsonUtils.write(Map.of("error", String.valueOf(e.getMessage())))).build())));
             }
         }
     }
@@ -383,14 +383,14 @@ public class AgentToolRegistry {
             return out;
         }
 
-        /** 会话模式读取：ea:agent:mode:{tenant}:{session}，suggest → 写动作挂起。 */
+        /** 会话模式按租户/用户/会话隔离；读取失败不得绕过审批。 */
         private boolean isSuggestMode() {
             try {
-                String mode = redis.opsForValue().get("ea:agent:mode:" + tenantId + ":" + sessionId);
-                return "suggest".equals(mode);
+                String mode = redis.opsForValue().get("ea:agent:mode:" + tenantId + ":" + userId + ":" + sessionId);
+                return !"auto".equals(mode);
             } catch (Exception e) {
                 log.warn("mode read failed tenantId={} session={}: {}", tenantId, sessionId, e.toString());
-                return false;
+                throw new IllegalStateException("审批模式读取失败，拒绝执行写动作", e);
             }
         }
 

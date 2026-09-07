@@ -54,6 +54,8 @@ public class RunStatsMiddleware implements MiddlewareBase {
     /** 当前 run 上下文（begin 时绑定；供运行中实时落库调用链明细）。 */
     private long tenantId;
     private long runId;
+    /** 当前 run 归属聊天 id（V17 新建聊天：调用链明细按聊天跨 run 追踪；旧流程 null）。 */
+    private Long chatId;
     private final List<UsageAcc> usages = new ArrayList<>();
     private final List<Map<String, Object>> toolCalls = new ArrayList<>();
     /** run 内工具调用序号（ToolResultEnd 完成顺序，1 起；供调用链回放）。 */
@@ -80,9 +82,10 @@ public class RunStatsMiddleware implements MiddlewareBase {
      * 引擎在知识库检索（withSessionMemory）之前调用，随后 {@link #recordKb} 记录检索步骤（seq=1），
      * 检索完成后 {@link #setCounts} 落 review/kb 计数（prompt_info）。
      */
-    public void begin(long tenantId, long runId) {
+    public void begin(long tenantId, long runId, Long chatId) {
         this.tenantId = tenantId;
         this.runId = runId;
+        this.chatId = chatId;
         reviewCount = 0;
         kbHits = 0;
         toolSeq = 0;
@@ -116,7 +119,7 @@ public class RunStatsMiddleware implements MiddlewareBase {
         kbRow = m;
         toolSeq = 1;
         try {
-            toolCallMapper.insert(toEntity(tenantId, runId, m));
+            toolCallMapper.insert(toEntity(tenantId, runId, chatId, m));
         } catch (Exception ex) {
             log.warn("live kb persist failed session={}: {}", sessionId, ex.toString());
         }
@@ -185,7 +188,7 @@ public class RunStatsMiddleware implements MiddlewareBase {
                 toolCalls.add(m);
                 // 运行中实时落库：调用链回放可查执行中的链路；失败仅告警（完成时引擎按 seq 去重兜底补齐）
                 try {
-                    toolCallMapper.insert(toEntity(tenantId, runId, m));
+                    toolCallMapper.insert(toEntity(tenantId, runId, chatId, m));
                 } catch (Exception ex) {
                     log.warn("live tool call persist failed session={} toolCallId={}: {}",
                             sessionId, e.getToolCallId(), ex.toString());
@@ -195,10 +198,11 @@ public class RunStatsMiddleware implements MiddlewareBase {
     }
 
     /** Map 明细 → agent_tool_call 行（运行时实时落库与引擎完成时兜底共用，保证同构幂等）。 */
-    static AgentToolCallEntity toEntity(long tenantId, long runId, Map<String, Object> tc) {
+    static AgentToolCallEntity toEntity(long tenantId, long runId, Long chatId, Map<String, Object> tc) {
         AgentToolCallEntity tce = new AgentToolCallEntity();
         tce.setTenantId(tenantId);
         tce.setRunId(runId);
+        tce.setChatId(chatId);
         Object seq = tc.get("seq");
         tce.setSeq(seq == null ? null : ((Number) seq).intValue());
         Object target = tc.get("target");

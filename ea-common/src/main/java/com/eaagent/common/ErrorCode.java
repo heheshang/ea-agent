@@ -48,6 +48,7 @@ public enum ErrorCode {
     SESSION_NOT_FOUND(15001, "会话不存在"),
     STATE_NOT_ALLOWED(15002, "状态不允许"),
     AWAITING_APPROVAL(15003, "待审批"),
+    CHAT_NOT_FOUND(15004, "聊天不存在"),
 
     // ---- 16xxx AI ----
     LLM_CALL_FAILED(16001, "LLM 调用失败"),

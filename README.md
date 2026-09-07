@@ -11,6 +11,7 @@ EA-Agent 是智能运营触达平台：以**对象模型（Ontology）**为底�
 - **EA-Bus 事件流**：Redis Streams 消费组 + DLQ，事件导入 → 人群匹配 → 频控闸 → 触达 → 回执回调
 - **多通道编排 DAG**：campaign 内 jsonb 编排节点（`{channel, template_id, condition, next}`），条件求值 + 拓扑序 DFS 逐客户下发，投递溯源到节点
 - **AI-Agent**：agentscope ReActAgent，`applyAction`（写动作）+ `callFunction`（咨询函数）双工具，31 类会话事件经 SSE 流式回传，写动作受会话审批门控（auto / suggest），对话按相关性注入知识库（pgvector RAG）与 MCP 外部工具
+- **模板 HITL 人工审核**：聊天内批注与模板管理共用审核流程，REVIEWER 明确通过/驳回，原文快照与版本绑定留痕；人工反馈不自动触发模型或发送
 - **频道频控闸**：每租户每通道每日上限（Redis INCR + 滚动 TTL），超限跳过触达、DAG 递归路径同样闭环
 - **人群快照**：活动创建/改绑人群时固化 `audience_snapshot`，发送只读快照、不再实时重算（修复圈定人群活动误发全量客户）
 - **调用链回放**：每次 Agent run 的工具调用明细实时落库，Ontology 流程图（引擎 → 知识库 → 工具 → Action/Function → 对象）逐步点亮回放，运行中 run 实时续载
@@ -27,13 +28,17 @@ EA-Agent 是智能运营触达平台：以**对象模型（Ontology）**为底�
 |---|---|
 | **登录页** | ![登录页](docs/screenshots/login.png) |
 | **Agent 工作台**：auto / suggest 双模式，AI 对话自动执行运营任务（圈选人群 → 核对规模 → 多通道触达），右侧实时展示工具链路 | ![Agent 工作台](docs/screenshots/workbench.png) |
+| **聊天内 HITL 批注**：查看待审模板原文、保存批注、展开历史，并将反馈带入聊天框 | ![聊天内 HITL 批注](docs/screenshots/hitl-chat.webp) |
 | **运营活动**：人群 + 触发规则列表，展示活动状态、通道、目标人群与「DAG · N」编排徽标 | ![运营活动列表](docs/screenshots/campaigns.png) |
 | **DAG 编排画布**：活动编辑内的多通道编排（分支条件 + 通道节点，拓扑序执行） | ![DAG 编排画布](docs/screenshots/campaign-dag.png) |
 | **客户管理**：客户画像（标签 / 属性 / 状态）+ 模糊搜索 + 分页 | ![客户管理](docs/screenshots/customers.png) |
 | **消息模板**：模板审核流（DRAFT → PENDING → APPROVED），Agent 自动建模板产物进入审核 | ![消息模板](docs/screenshots/templates.png) |
+| **模板人工审核**：REVIEWER 驳回后显示新状态与版本，历史保留运营批注、审核决定及当时原文 | ![模板 HITL 审核历史](docs/screenshots/hitl-review.webp) |
 | **统计看板**：触达统计 + Ontology 调用链路摘要（调用 / 失败 / 热点工具 TOP5） | ![统计看板](docs/screenshots/stats.png) |
 | **知识库**：租户维度业务规则与事实条目（决策 / 约束 / 反模式 / 取代链），对话时按相关度注入 | ![知识库](docs/screenshots/knowledge.png) |
 | **Ontology 调用链路**：流程图 5 泳道 + 调用链回放（逐步点亮真实调用路径） | ![Ontology 链路](docs/screenshots/ontology.png) |
+
+HITL 截图来自独立联调数据库的真实操作。模板中的 HTML 字符串是安全渲染验证样例，按普通文本展示，不会作为 HTML 执行。
 
 ## 核心能力详解
 
@@ -59,6 +64,50 @@ EA-Agent 是智能运营触达平台：以**对象模型（Ontology）**为底�
 - **MCP 工具接入**：配置驱动（stdio / streamable-http / sse 三传输），`mcp_*` 工具与本地工具同等注册可见，惰性构建 + 失败降级
 - **Skill 技能体系**：`agentscope-skills` 目录经 Layer-2 并入 harness，按需加载、提示词自动注入（示例：`delivery_analysis` 触达复盘分步指引）
 - **自动建模板**：`createTemplate` Action 直建模板（`{{...}}` 变量提取为 vars，产物 PENDING 进入人工审核流，审核流不可绕过）
+- **模板 HITL 人工审核**：聊天与模板管理共用审核面板，支持批注、最终决定及历史原文快照；操作步骤和权限边界见下节。
+
+### 模板 HITL 人工审核
+
+**会话写动作审批与模板审核是两道独立门控**：`suggest` 决定是否执行写动作；模板审核决定模板是否可用于路由和发送。即使会话使用 `auto`，Agent 创建的模板仍为 `PENDING`，不能绕过人工审核。
+
+#### 操作流程
+
+1. 在工作台新建或选择自己的聊天，展开「模板批注 / HITL 审核」。Agent 工具结果返回待审模板时会自动展开并选中该模板；也可在「消息模板」页点击「批注 / 审核」，无需先创建聊天。
+2. 核对模板原文、版本与状态，填写批注。点击「保存批注（不通过）」只追加记录，不改变审核状态。
+3. 审核员使用 `REVIEWER` 账号，在自己的聊天或模板管理页选择同租户模板，明确点击「人工通过」或「人工驳回」。审核员不能进入其他用户的聊天，但能查看同租户模板的审核记录。
+4. 驳回后，在模板管理页修改并重新提交审核；只有 `DRAFT` 或 `REJECTED` 模板可编辑或提交。Agent 创建模板直接进入 `PENDING`，手工新建模板从 `DRAFT` 开始。
+5. 聊天内保存反馈后，可点击「将反馈带入聊天」填入任务框，核对后再发送给助手。保存批注、通过或驳回均不会自动调用模型、恢复任务或发送触达。
+
+| 操作 | 权限与前置条件 | 结果 |
+|---|---|---|
+| 保存批注 `COMMENT` | 已登录、同租户模板、当前版本；批注非空 | 追加记录，模板状态及版本不变 |
+| 人工通过 `APPROVE` | `REVIEWER`、`PENDING`、当前版本；意见可为空字符串 | 状态变为 `APPROVED`，版本递增 |
+| 人工驳回 `REJECT` | `REVIEWER`、`PENDING`、当前版本；原因非空 | 状态变为 `REJECTED`，版本递增 |
+| 编辑或重新提交 | `DRAFT` 或 `REJECTED` | 编辑保存或提交成功后版本递增；提交进入 `PENDING` |
+
+审核意见最多 2000 字符。历史记录保存审核者、时间、决定、当时版本及标题/正文快照；修改模板不会覆盖历史原文。版本冲突时需刷新原文重新核对，不能用旧页面批准新版本。最终状态与审核记录在同一事务内提交或回滚，并发终审只允许一个决定成功。
+
+#### 审核 API
+
+请求需携带登录凭据 `Authorization: Bearer <token>` 和 `X-Tenant-Id`。
+
+| 方法与路径 | 用途 |
+|---|---|
+| `GET /api/templates/{id}` | 读取当前模板、`version` 和 `reviewStatus` |
+| `GET /api/templates/{id}/reviews` | 按时间、ID 升序读取同租户模板的审核历史 |
+| `POST /api/templates/{id}/reviews` | 保存批注或最终审核决定 |
+
+POST 请求示例（`version` 必须使用刚读取的模板版本）：
+
+```json
+{
+  "version": 1,
+  "decision": "COMMENT",
+  "comment": "请写明优惠截止日期"
+}
+```
+
+聊天内审核可额外传入 `chatId`，服务端校验该聊天属于当前租户及当前用户。身份由登录上下文确定，不接受客户端指定审核者。历史接口返回审核记录，不返回聊天正文。
 
 ### 人群快照与圈定
 
@@ -139,7 +188,18 @@ docker compose up -d --build
 | `admin` | `admin123` | OPERATOR | 租户 `demo` 管理员 |
 | `reviewer` | `reviewer123` | REVIEWER | 审核员（审批门控 / 模板审核） |
 
-登录后前端自动携带 `X-Tenant-Id` 调用 API。
+演示租户登录域名为 **`demo.local`**（租户名称为 `demo`）。登录后前端自动携带 `X-Tenant-Id` 调用 API。演示账号仅供本地联调使用。
+
+### 聊天隔离与升级注意
+
+- 聊天、运行记录、SSE 回放和调用链按租户及用户校验归属；已禁用用户或已变更角色的旧 JWT 拒绝访问。
+- `POST /api/agent/chat` 使用 `chatId` 续接聊天；服务端返回权威 `session_id`，不接受 `X-Session-Id` 指定会话。新聊天会话为 `chat-{chatId}`，已有聊天保留最近 run 的会话标识。
+- V18 为 `(tenant_id, user_id, session_id)` 建在途 run 部分唯一索引；迁移会锁表并终结历史重复在途行，部署应预留迁移窗口。
+- V19 为模板增加 `version`（已有模板初值 0）及 `template_review` 审核记录表，由 Flyway 自动执行。前后端需同步升级：旧 `/api/templates/{id}/approve`、`/reject` 接口已移除，改用 `/reviews` 并提交当前版本。
+- 审核历史是模板级记录：删除聊天仅清空审核记录的 `chatId`；删除模板会级联删除其审核记录，不应将其作为独立永久审计归档。
+- Agent 状态与工作目录切换到 `tenant-{tenantId}-user-{userId}` 命名空间。旧租户共享状态不自动导入，避免归属不明的数据泄露；历史聊天记录仍保留，模型持久化记忆从隔离命名空间重新建立。
+- 工作台“停止”仅停止前端订阅并忽略迟到响应，不撤销已在后端执行的 run 或业务动作。
+- 后端验证使用 JDK 21：本机 JDK 26 超出当前测试依赖 Byte Buddy 支持范围。Colima 下运行 Testcontainers 需设置 `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock`。
 
 ### 本地开发
 
@@ -157,6 +217,23 @@ npm run dev
 ```
 
 联调顺序建议：租户登录 → 对象 CRUD（幂等头验证）→ 模板 / 通道配置 → 人群圈选 → 活动编排（DAG / 触发规则）→ 事件导入触发 → Agent 对话 SSE 全链路（auto / suggest 审批门控）。
+
+### 验证
+
+在仓库根目录执行后端审核回归，需先启动 Docker；确认结果中的 `Skipped` 为 0，避免把容器不可用导致的跳过误认为通过。
+
+```bash
+# Colima 环境需要；其他 Docker 环境按实际配置
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+
+mvn -pl ea-app -am -Dtest=TemplateReviewIntegrationTest \
+  -Dsurefire.failIfNoSpecifiedTests=false test
+
+# 前端类型检查与生产构建
+npm --prefix ea-web run build
+```
+
+审核回归覆盖权限/聊天归属、旧版本、重复与并发终审、原文快照、事务回滚及删除行为。浏览器联调可按「运营账号批注 → 审核员驳回 → 修改重提 → 审核员通过」检查闭环，并刷新页面确认历史保留；这些人工审核操作不依赖 LLM 配置。
 
 ## 目录结构
 

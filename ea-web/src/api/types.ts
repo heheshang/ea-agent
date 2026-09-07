@@ -26,10 +26,24 @@ export interface AgentRun {
   sessionId: string
   userId: number
   goal: string
+  /** 归属聊天 id（V17 /api/agent/chats；调用链按聊天跨 run 追踪，旧流程为 undefined） */
+  chatId?: number
   /** 模型最终回复摘要（完成时由后端回写） */
   summary?: string
   status: string
   tokensUsed?: number
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 聊天容器（V17 /api/agent/chats）：新建聊天产出唯一 id + 描述；run 与调用链明细按 chat_id 追踪。 */
+export interface AgentChat {
+  id: number
+  tenantId: number
+  userId: number
+  description: string
+  /** ACTIVE */
+  status: string
   createdAt?: string
   updatedAt?: string
 }
@@ -80,6 +94,7 @@ export interface KnowledgeGraph {
 export interface Template {
   id: number
   tenantId: number
+  version: number
   channel: string
   title: string
   content: string
@@ -88,6 +103,28 @@ export interface Template {
   /** DRAFT|PENDING|APPROVED|REJECTED */
   reviewStatus?: string
   createdAt?: string
+}
+
+/** 人工批注与最终审核记录，原文快照对应 templateVersion。 */
+export interface TemplateReview {
+  id: number
+  tenantId: number
+  templateId: number
+  templateVersion: number
+  chatId?: number
+  userId: number
+  decision: 'COMMENT' | 'APPROVE' | 'REJECT'
+  comment: string
+  title: string
+  content: string
+  createdAt: string
+}
+
+export interface CreateTemplateReviewRequest {
+  version: number
+  decision: TemplateReview['decision']
+  comment: string
+  chatId?: number
 }
 
 export interface Row {

@@ -30,6 +30,7 @@ class PgAgentStateStoreTest {
     void parseTenantIdValid() {
         assertEquals(5L, PgAgentStateStore.parseTenantId("tenant-5"));
         assertEquals(123L, PgAgentStateStore.parseTenantId("tenant-123"));
+        assertEquals(5L, PgAgentStateStore.parseTenantId("tenant-5-user-42"));
     }
 
     @Test
@@ -40,6 +41,8 @@ class PgAgentStateStoreTest {
         assertThrows(IllegalArgumentException.class, () -> PgAgentStateStore.parseTenantId("tenant-0"));
         assertThrows(IllegalArgumentException.class, () -> PgAgentStateStore.parseTenantId("tenant--5"));
         assertThrows(IllegalArgumentException.class, () -> PgAgentStateStore.parseTenantId("tenant-abc"));
+        assertThrows(IllegalArgumentException.class, () -> PgAgentStateStore.parseTenantId("tenant-5-user-0"));
+        assertThrows(IllegalArgumentException.class, () -> PgAgentStateStore.parseTenantId("tenant-5-user-42-extra"));
     }
 
     @Test

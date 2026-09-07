@@ -91,7 +91,7 @@ onMounted(async () => {
   <div v-loading="loading" class="stats-page">
     <div class="page-head">
       <div>
-        <div class="page-title">📈 存留看板</div>
+        <div class="page-title">存留看板</div>
         <div class="page-sub">触达客户回访留存：首次成功触达后的 D1/D3/D7/D30 累计回访率（UTC；窗口不足时后段为已观测值）</div>
       </div>
       <div class="controls">

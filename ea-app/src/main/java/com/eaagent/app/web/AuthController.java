@@ -7,8 +7,11 @@ import com.eaagent.app.security.JwtService;
 import com.eaagent.common.BizException;
 import com.eaagent.common.ErrorCode;
 import com.eaagent.common.Result;
+import com.eaagent.ontology.mapper.TenantMapper;
 import com.eaagent.ontology.mapper.TenantUserMapper;
 import com.eaagent.ontology.model.TenantUserEntity;
+import com.eaagent.ontology.model.TenantEntity;
+import jakarta.validation.Valid;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,23 +26,34 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final TenantUserMapper tenantUserMapper;
+    private final TenantMapper tenantMapper;
     private final JwtService jwtService;
     private final PasswordEncoder encoder;
 
-    public AuthController(TenantUserMapper tenantUserMapper, JwtService jwtService, PasswordEncoder encoder) {
+    public AuthController(TenantUserMapper tenantUserMapper, TenantMapper tenantMapper,
+                          JwtService jwtService, PasswordEncoder encoder) {
         this.tenantUserMapper = tenantUserMapper;
+        this.tenantMapper = tenantMapper;
         this.jwtService = jwtService;
         this.encoder = encoder;
     }
 
     @PostMapping("/login")
-    public Result<LoginResponse> login(@RequestBody LoginRequest req) {
+    public Result<LoginResponse> login(@Valid @RequestBody LoginRequest req) {
+        TenantEntity tenant = tenantMapper.selectOne(new QueryWrapper<TenantEntity>()
+                .eq(TenantEntity.COL_DOMAIN, req.getTenantDomain().trim())
+                .eq(TenantEntity.COL_STATUS, TenantEntity.STATUS_ACTIVE)
+                .last("LIMIT 1"));
+        if (tenant == null) {
+            throw new BizException(ErrorCode.UNAUTHENTICATED, "租户、用户名或密码错误");
+        }
         TenantUserEntity user = tenantUserMapper.selectOne(new QueryWrapper<TenantUserEntity>()
+                .eq(TenantUserEntity.COL_TENANT_ID, tenant.getId())
                 .eq(TenantUserEntity.COL_LOGIN_NAME, req.getLoginName())
                 .eq(TenantUserEntity.COL_STATUS, TenantUserEntity.STATUS_ACTIVE)
                 .last("LIMIT 1"));
         if (user == null || !encoder.matches(req.getPassword(), user.getPasswordHash())) {
-            throw new BizException(ErrorCode.UNAUTHENTICATED, "用户名或密码错误");
+            throw new BizException(ErrorCode.UNAUTHENTICATED, "租户、用户名或密码错误");
         }
         String token = jwtService.createToken(user.getId(), user.getTenantId(), user.getRole());
         LoginResponse resp = new LoginResponse(

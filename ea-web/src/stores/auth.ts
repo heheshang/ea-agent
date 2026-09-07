@@ -21,8 +21,9 @@ export const useAuthStore = defineStore('auth', {
     loggedIn: (s) => s.token !== '',
   },
   actions: {
-    async login(loginName: string, password: string) {
-      const r: LoginResponse = await post('/auth/login', { loginName, password })
+    async login(tenantDomain: string, loginName: string, password: string) {
+      const r: LoginResponse = await post('/auth/login', { tenantDomain, loginName, password })
+      localStorage.removeItem('ea.session_id')
       this.token = r.token
       this.tenantId = String(r.tenantId)
       this.role = r.role
@@ -34,6 +35,7 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem(K.name, r.name)
     },
     logout() {
+      localStorage.removeItem('ea.session_id')
       this.token = ''
       this.tenantId = ''
       this.role = ''

@@ -246,9 +246,9 @@ onMounted(load)
 <template>
   <el-card shadow="never">
     <template #header>
-      <div style="display: flex; justify-content: space-between; align-items: center">
-        <span>运营活动（人群 + 触发规则）</span>
-        <div style="display: flex; gap: 10px; align-items: center">
+      <div class="resource-heading">
+        <div><h1>运营活动</h1><p>从目标人群到多通道触达，管理每一次客户连接</p></div>
+        <div class="resource-actions">
           <el-radio-group v-model="view" size="small">
             <el-radio-button value="table">表格</el-radio-button>
             <el-radio-button value="board">看板</el-radio-button>

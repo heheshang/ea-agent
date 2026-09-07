@@ -17,6 +17,7 @@ public class AgentRunEntity {
     public static final String COL_ID = "id";
     public static final String COL_TENANT_ID = "tenant_id";
     public static final String COL_SESSION_ID = "session_id";
+    public static final String COL_CHAT_ID = "chat_id";
     public static final String COL_USER_ID = "user_id";
     public static final String COL_ROLE = "role";
     public static final String COL_GOAL = "goal";
@@ -46,6 +47,8 @@ public class AgentRunEntity {
     private Long id;
     private Long tenantId;
     private String sessionId;
+    /** 归属聊天 id（V17 起：新建聊天可跨 run 追踪，旧行 NULL）。 */
+    private Long chatId;
     private Long userId;
     /** 发起用户角色（9.2 权限下放：role(agent)=role(发起用户)，工具身份透传）。 */
     private String role;

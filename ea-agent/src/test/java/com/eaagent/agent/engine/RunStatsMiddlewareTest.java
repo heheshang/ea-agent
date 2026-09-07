@@ -3,6 +3,7 @@ package com.eaagent.agent.engine;
 import com.eaagent.ontology.mapper.AgentToolCallMapper;
 import com.eaagent.ontology.model.AgentToolCallEntity;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.HashMap;
 import java.util.List;
@@ -11,6 +12,8 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /** RunStatsMiddleware.toEntity：调用链明细行转换（运行时实时落库与引擎完成时兜底共用）。 */
 class RunStatsMiddlewareTest {
@@ -30,10 +33,11 @@ class RunStatsMiddlewareTest {
 
     @Test
     void applyActionWithTargetMapsToActionKind() {
-        AgentToolCallEntity e = RunStatsMiddleware.toEntity(7, 42,
+        AgentToolCallEntity e = RunStatsMiddleware.toEntity(7, 42, 123L,
                 tc(3, "applyAction", "updateCustomer", "{\"action\":\"updateCustomer\"}", 150, true, null));
         assertEquals(7L, e.getTenantId());
         assertEquals(42L, e.getRunId());
+        assertEquals(123L, e.getChatId());
         assertEquals(3, e.getSeq());
         assertEquals("action", e.getKind());
         assertEquals("applyAction", e.getName());
@@ -46,7 +50,7 @@ class RunStatsMiddlewareTest {
 
     @Test
     void callFunctionWithTargetMapsToFunctionKind() {
-        AgentToolCallEntity e = RunStatsMiddleware.toEntity(1, 9,
+        AgentToolCallEntity e = RunStatsMiddleware.toEntity(1, 9, null,
                 tc(1, "callFunction", "summarize", "{\"name\":\"summarize\"}", 800, false, "TOOL_ERROR"));
         assertEquals("function", e.getKind());
         assertEquals("summarize", e.getTarget());
@@ -57,7 +61,7 @@ class RunStatsMiddlewareTest {
 
     @Test
     void queryToolWithoutTargetMapsToToolKind() {
-        AgentToolCallEntity e = RunStatsMiddleware.toEntity(1, 9,
+        AgentToolCallEntity e = RunStatsMiddleware.toEntity(1, 9, null,
                 tc(2, "queryCustomers", null, "{\"tag\":\"test\"}", null, true, null));
         assertEquals("tool", e.getKind());
         assertNull(e.getTarget());
@@ -67,16 +71,17 @@ class RunStatsMiddlewareTest {
 
     @Test
     void seqNullAndNonNumericDurationAreTolerated() {
-        AgentToolCallEntity e = RunStatsMiddleware.toEntity(1, 9,
+        AgentToolCallEntity e = RunStatsMiddleware.toEntity(1, 9, null,
                 tc(null, "some_tool", null, "params", "n/a", true, null));
         assertNull(e.getSeq());
         assertNull(e.getDurationMs());
+        assertNull(e.getChatId()); // 旧流程无聊天 → chat_id 为 null（兼容）
     }
 
     @Test
     void recordKbBecomesFirstStepAndClearsAfterDrain() {
         RunStatsMiddleware mw = new RunStatsMiddleware("m", "s", null);
-        mw.begin(7, 42);
+        mw.begin(7, 42, 123L);
         mw.recordKb("查退货款规则", 3, 15);
         List<Map<String, Object>> out = mw.drainToolCalls();
         assertEquals(1, out.size());
@@ -93,7 +98,7 @@ class RunStatsMiddlewareTest {
     @Test
     void recordKbNoHitKeepsStepWithOkFalse() {
         RunStatsMiddleware mw = new RunStatsMiddleware("m", "s", null);
-        mw.begin(7, 42);
+        mw.begin(7, 42, 123L);
         mw.recordKb("无匹配的疑问", 0, 3);
         Map<String, Object> kb = mw.drainToolCalls().get(0);
         assertEquals(false, kb.get("ok"));
@@ -102,10 +107,24 @@ class RunStatsMiddlewareTest {
 
     @Test
     void kbRowMapsToKbKindEntity() {
-        AgentToolCallEntity e = RunStatsMiddleware.toEntity(7, 42,
+        AgentToolCallEntity e = RunStatsMiddleware.toEntity(7, 42, 123L,
                 tc(1, "knowledge_search", null, "goal", 12, true, null));
         assertEquals("kb", e.getKind());
         assertEquals(1, e.getSeq());
         assertEquals("knowledge_search", e.getName());
+    }
+
+    /** 核心追踪语义：begin 绑定的聊天 id 随实时落库写入 agent_tool_call 行（聊天 → run → 调用链明细）。 */
+    @Test
+    void liveInsertCarriesBoundChatId() {
+        AgentToolCallMapper mapper = mock(AgentToolCallMapper.class);
+        RunStatsMiddleware mw = new RunStatsMiddleware("m", "s", mapper);
+        mw.begin(7, 42, 123L);
+        mw.recordKb("查退货款规则", 3, 15);
+        ArgumentCaptor<AgentToolCallEntity> cap = ArgumentCaptor.forClass(AgentToolCallEntity.class);
+        verify(mapper).insert(cap.capture());
+        assertEquals(123L, cap.getValue().getChatId());
+        assertEquals("kb", cap.getValue().getKind());
+        assertEquals(1, cap.getValue().getSeq());
     }
 }

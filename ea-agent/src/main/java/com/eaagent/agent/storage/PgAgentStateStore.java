@@ -50,7 +50,13 @@ public class PgAgentStateStore implements AgentStateStore {
     public static Long parseTenantId(String userId) {
         if (userId != null && userId.startsWith(TENANT_PREFIX)) {
             try {
-                long id = Long.parseLong(userId.substring(TENANT_PREFIX.length()));
+                int userSeparator = userId.indexOf("-user-", TENANT_PREFIX.length());
+                String tenantPart = userSeparator < 0 ? userId.substring(TENANT_PREFIX.length())
+                        : userId.substring(TENANT_PREFIX.length(), userSeparator);
+                if (userSeparator >= 0 && Long.parseLong(userId.substring(userSeparator + 6)) <= 0) {
+                    throw new NumberFormatException("invalid user id");
+                }
+                long id = Long.parseLong(tenantPart);
                 if (id > 0) {
                     return id;
                 }

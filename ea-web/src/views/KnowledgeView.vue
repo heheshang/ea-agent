@@ -225,7 +225,7 @@ onMounted(() => {
   <div v-loading="loading" class="kb-page">
     <div class="page-head">
       <div>
-        <div class="page-title">📚 知识库</div>
+        <div class="page-title">知识库</div>
         <div class="page-sub">租户维度的业务规则与事实条目，对话时按相关度注入 Agent 上下文（无命中不注入）</div>
       </div>
       <div class="page-head-actions">

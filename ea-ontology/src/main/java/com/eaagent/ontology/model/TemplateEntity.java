@@ -21,6 +21,7 @@ public class TemplateEntity {
     public static final String COL_CONTENT = "content";
     public static final String COL_VARS = "vars";
     public static final String COL_REVIEW_STATUS = "review_status";
+    public static final String COL_VERSION = "version";
     public static final String COL_CREATED_AT = "created_at";
 
     /** review_status 值（DRAFT|PENDING|APPROVED|REJECTED）。 */
@@ -38,5 +39,6 @@ public class TemplateEntity {
     @TableField(typeHandler = JacksonTypeHandler.class)
     private java.util.List<String> vars;      // jsonb
     private String reviewStatus;              // DRAFT|PENDING|APPROVED|REJECTED
+    private long version;                    // 初值 0；编辑、提交和最终审核递增
     private Instant createdAt;
 }

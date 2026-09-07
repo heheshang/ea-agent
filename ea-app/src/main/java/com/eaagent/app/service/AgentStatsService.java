@@ -3,6 +3,7 @@ package com.eaagent.app.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.common.Texts;
+import com.eaagent.common.TenantContext;
 import com.eaagent.ontology.mapper.ActionLogMapper;
 import com.eaagent.ontology.mapper.AgentRunMapper;
 import com.eaagent.ontology.mapper.AgentToolCallMapper;
@@ -423,6 +424,7 @@ public class AgentStatsService {
     public Map<String, Object> runTrace(long tenantId, long runId) {
         AgentRunEntity run = runMapper.selectOne(new QueryWrapper<AgentRunEntity>()
                 .eq(AgentRunEntity.COL_ID, runId)
+                .eq(AgentRunEntity.COL_USER_ID, TenantContext.userId())
                 .eq(AgentRunEntity.COL_TENANT_ID, tenantId));
         if (run == null) {
             return null;
@@ -442,6 +444,8 @@ public class AgentStatsService {
             m.put("duration_ms", c.getDurationMs());
             m.put("ok", c.getOk());
             m.put("error", c.getError());
+            // V17：调用链明细直接携带聊天 id（每条 trace 可沿聊天跨 run 追踪）
+            m.put("chat_id", c.getChatId());
             trace.add(m);
         }
         Map<String, Object> runInfo = new LinkedHashMap<>();
@@ -449,6 +453,7 @@ public class AgentStatsService {
         runInfo.put("created_at", run.getCreatedAt());
         runInfo.put("status", run.getStatus());
         runInfo.put("summary", run.getSummary());
+        runInfo.put("chat_id", run.getChatId());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("run", runInfo);
         out.put("trace", trace);
@@ -504,6 +509,7 @@ public class AgentStatsService {
         Instant from = Instant.now().minus(days, ChronoUnit.DAYS);
         QueryWrapper<AgentRunEntity> qw = new QueryWrapper<AgentRunEntity>()
                 .eq(AgentRunEntity.COL_TENANT_ID, tenantId)
+                .eq(AgentRunEntity.COL_USER_ID, TenantContext.userId())
                 .ge(AgentRunEntity.COL_CREATED_AT, from)
                 .orderByDesc(AgentRunEntity.COL_ID);
         if (sessionId != null && !sessionId.isBlank()) {

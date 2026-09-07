@@ -4,7 +4,31 @@
 
 ## [Unreleased]
 
+### Template human review (HITL)
+
+- 聊天与模板管理页共用人工审核面板：模板原文、版本、批注、通过/驳回及可展开的历史原文快照；Agent 创建待审模板后自动展开入口，保存反馈可显式带入聊天，不自动调用模型或执行触达。
+- V19 新增模板版本与审核记录；统一 `GET/POST /api/templates/{id}/reviews`，移除旧 approve/reject 接口。最终审核限定 REVIEWER 与 PENDING，批注/驳回原因必填，聊天关联校验租户与用户归属。
+- 编辑/提交使用版本条件更新，最终审核通过事务行锁与唯一约束防重复决定；审核状态及记录共同提交或回滚，历史保留当时原文。新增 PostgreSQL 集成回归覆盖权限、旧版本、并发、回滚及删除行为。
+
+### Console visual refresh
+
+- 统一深蓝导航、浅灰蓝背景、卡片、表格及表单主题；移动端导航改为抽屉，管理页筛选工具条支持换行，窄屏表格操作列随表格横向滚动，避免遮挡记录。
+- 登录页采用品牌／表单双栏与移动端单栏布局；支持回车登录、自动填充和提交期间防重复请求。
+- 工作台增加目标建议、清晰的执行模式说明、聊天与历史侧栏；支持 Enter 发送、Shift+Enter 换行与中文输入法保护，建议按钮仅填入目标、不自动执行。
+- 统计指标卡片移动端双列显示，Ontology 图例换行；保留既有业务 API、审批、SSE 与安全 Markdown 渲染。
+
+### Security and lifecycle repairs
+
+- 聊天、run、SSE、调用链和模型记忆增加用户归属边界；JWT 逐请求校验当前用户状态与角色，只有健康检查保持公开。
+- 新会话标识改由服务端按聊天生成；审批模式键增加用户维度，Redis 模式读取失败禁止写动作，工具异常通过 JSON 序列化输出。
+- V18 增加租户/用户/会话在途唯一索引并清理历史重复行；SSE 原子认领 NEW run，终态更新不覆盖摘要/统计，watchdog 更新时复查心跳，缓存过期回放使用持久化摘要。
+- 前端改为鉴权 fetch SSE，支持 UTF-8 分片、CR/LF、多行事件、终止与断线处理；切换聊天、回放、退出和停止期间丢弃旧异步响应。修复停止按钮被 loading 状态屏蔽点击。
+- 移除归属不明确的旧文件自动回填；当前运行期存储使用 `tenant-{tenantId}-user-{userId}`，不自动继承旧租户共享模型状态。以下早期条目中的租户共享命名空间、客户端新 session UUID 与旧回填说明已被本节取代。
+
+
 ### Added
+
+- **新建聊天（V17，唯一 id + 描述 + 调用链追踪）**：新增 `agent_chat` 表与 `POST /api/agent/chats`（body description 可空，缺省「新对话」，返回 `{chat_id, description}`）、`GET /api/agent/chats`（新到旧）；`POST /api/agent/chat` 未带 `chat_id` 时自动按 goal 建聊天（首条 goal 截断 64 字符回写为描述），响应新增 `chat_id`/`description`，`GET /api/agent/runs` 支持 `chat_id` 过滤。聊天 id 贯通调用链路：`agent_run.chat_id` + `agent_tool_call.chat_id`（V17 迁移加列 + agent_run 复合 FK；`RunContext`/`RunStatsMiddleware` 逐层传播，实时落库与兜底 insert 均带 chat_id），`GET /api/agent/stats/run-trace` 的 runInfo 与每条 trace 均返回 chat_id；越权访问他租户聊天 E-15004。AgentWorkbench 新增「新建聊天」按钮（新 session UUID，历史按 session 分组自洽）、当前聊天 chip（`聊天 #id · 描述`）、左侧聊天列表卡片（切换聊天续接该聊天最新 run 的 session）、历史 Run 按聊天过滤；Ontology 调用链回放 run 下拉标注 `聊天 #id`、每步展示归属聊天。
 
 - **agentscope 运行期落库 PostgreSQL（V16）+ 多租户隔离**：新增 `ea.agentscope.file-store` 开关（**默认 `postgres`**，`EA_AGENTSCOPE_FILE_STORE` 可覆盖为 `filesystem` 回退本地）——把 agentscope 默认落盘的会话状态（`AgentStateStore`）与 workspace 文件（`BaseStore`/`RemoteFilesystem` 后端）**默认**改存 PostgreSQL：新迁移 `V16__agent_scope_file_store.sql` 建 `agent_scope_state`（会话状态 KV，`slot_kind` single/list 区分语义、全量替换、jsonb）与 `agent_scope_file`（workspace 文件 KV，`namespace` 以单位分隔符 `\u001F` join 保留前缀语义）两张表；引擎装配 `PgDistributedStore`（注入 `PgAgentStateStore` + `PgBaseStore`，MyBatis-Plus mapper，CAS `version` 乐观锁 + `DuplicateKey` 兜底 update）。**多租户隔离**：存储层不依赖任何 ThreadLocal（agentscope 线程无 TenantContext），租户经 `RuntimeContext.userId` 显式编码为 `"tenant-{tenantId}"` 派生 `BaseStore` namespace（`["agents", "ea-operator", "users", "tenant-{id}", route]`）与 `AgentStateStore` 键，DB 侧每条数据再落显式 `tenant_id` 列 + FK + `UNIQUE(tenant_id, …)` 兜底（跨租户同 `(session,key)`/`(namespace,key)` 互不覆盖，对齐 V1「列 + FK」基线、不用租户插件）；启动 `@PostConstruct` 存量回填迁移器把既有 `.agentscope/workspace/{sessionId}` 文件幂等写入 PG（租户经 `agent_run.session_id` 反查，归属不明宁缺勿错）。
 - **频道频控闸（E-13004，发送管线缺失闭环）**：`sendOneCustomer` 发送前置频控检查——每次触达对 `ea:fc:{tenant}:{channel}:{customerId}:{date}` 做 Redis INCR 按日计数（首次 INCR 后对该键设置滚动 TTL 至当日 24:00，避免隔日残留键膨胀），超过 `channel_config.frequency_limit.max_per_day`（每租户每通道每日上限）则跳过发送、不计投递行；上限未配置 / 非数字值 → 不限频且**不触碰 Redis**（零额外延迟）。跳过结果以 `SendOutcome.skip = FREQUENCY_LIMITED` 显式返回（不落 delivery 行）；`WorkflowExecutor` 计数并入现有输出（`frequency_limited` 字段）与 DAG 递归路径（DAG 循环边界隐患的频控闭环，此前超限客户仍会沿 `next` 递归下钻消费其他通道）。

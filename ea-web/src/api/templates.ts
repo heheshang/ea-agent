@@ -1,7 +1,7 @@
 import { del, get, post, put } from './http'
-import type { Template } from './types'
+import type { CreateTemplateReviewRequest, Template, TemplateReview } from './types'
 
-/** 模板管理 /api/templates：租户维度 CRUD + 审核流（submit / approve / reject）。 */
+/** 模板管理 /api/templates：租户维度 CRUD、提交审核与人工批注/最终审核。 */
 export async function listTemplates(channel?: string): Promise<Template[]> {
   return get<Template[]>('/templates', channel ? { channel } : undefined)
 }
@@ -22,12 +22,12 @@ export async function submitTemplate(id: number): Promise<Template> {
   return post<Template>(`/templates/${id}/submit`)
 }
 
-export async function approveTemplate(id: number): Promise<Template> {
-  return post<Template>(`/templates/${id}/approve`)
+export async function listTemplateReviews(id: number): Promise<TemplateReview[]> {
+  return get<TemplateReview[]>(`/templates/${id}/reviews`)
 }
 
-export async function rejectTemplate(id: number): Promise<Template> {
-  return post<Template>(`/templates/${id}/reject`)
+export async function createTemplateReview(id: number, body: CreateTemplateReviewRequest): Promise<TemplateReview> {
+  return post<TemplateReview>(`/templates/${id}/reviews`, body)
 }
 
 export async function deleteTemplate(id: number): Promise<void> {

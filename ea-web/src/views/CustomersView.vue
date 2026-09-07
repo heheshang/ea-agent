@@ -132,9 +132,9 @@ onMounted(load)
 <template>
   <el-card shadow="never">
     <template #header>
-      <div style="display: flex; justify-content: space-between; align-items: center">
-        <span>客户对象（/api/objects/customer，租户隔离）</span>
-        <div style="display: flex; gap: 8px">
+      <div class="resource-heading">
+        <div><h1>客户管理</h1><p>统一管理客户画像、属性与人群标签</p></div>
+        <div class="resource-actions">
           <el-input
             v-model="keyword"
             placeholder="姓名 / 手机 / 邮箱 / 外部 ID"

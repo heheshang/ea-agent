@@ -114,7 +114,7 @@ onMounted(load)
   <div v-loading="loading" class="stats-page">
     <div class="page-head">
       <div>
-        <div class="page-title">📊 Agent 统计看板</div>
+        <div class="page-title">Agent 统计看板</div>
         <div class="page-sub">token 构成 / 耗时 / 成本 / 缓存命中 / 工具与 skill 调用 / 提示词版本</div>
       </div>
       <el-radio-group v-model="days" @change="load">

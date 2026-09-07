@@ -6,6 +6,9 @@ import com.eaagent.common.TenantContext;
 import com.eaagent.common.JsonUtils;
 import com.eaagent.ontology.mapper.TenantMapper;
 import com.eaagent.ontology.model.TenantEntity;
+import com.eaagent.ontology.mapper.TenantUserMapper;
+import com.eaagent.ontology.model.TenantUserEntity;
+import com.eaagent.common.Roles;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -20,8 +23,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 租户上下文过滤器（9.2）：X-Tenant-Id → TenantContext；租户状态校验（E-11003）；
- * JWT（Authorization: Bearer）解析身份；白名单端点不强制租户头（SSE 由服务端恢复）。
+ * 租户与身份过滤器：除登录、回执和运维端点外，请求必须同时携带有效 JWT 与
+ * {@code X-Tenant-Id}；两者租户必须一致，校验通过后才建立 {@link TenantContext}。
  */
 @Component
 public class TenantFilter extends OncePerRequestFilter {
@@ -29,10 +32,12 @@ public class TenantFilter extends OncePerRequestFilter {
 
     private final TenantMapper tenantMapper;
     private final JwtService jwtService;
+    private final TenantUserMapper userMapper;
 
-    public TenantFilter(TenantMapper tenantMapper, JwtService jwtService) {
+    public TenantFilter(TenantMapper tenantMapper, JwtService jwtService, TenantUserMapper userMapper) {
         this.tenantMapper = tenantMapper;
         this.jwtService = jwtService;
+        this.userMapper = userMapper;
     }
 
     @Override
@@ -61,23 +66,36 @@ public class TenantFilter extends OncePerRequestFilter {
             return;
         }
 
-        Long userId = null;
-        String role = null;
         String auth = request.getHeader("Authorization");
-        if (auth != null && auth.startsWith("Bearer ")) {
-            try {
-                Claims claims = jwtService.parse(auth.substring(7));
-                Long jwtTenant = claims.get("tenantId", Long.class);
-                if (jwtTenant != null && jwtTenant != tenantId) {
-                    reject(response, ErrorCode.TENANT_MISMATCH, "token tenant mismatch");
-                    return;
-                }
-                userId = Long.valueOf(claims.getSubject());
-                role = claims.get("role", String.class);
-            } catch (Exception e) {
-                reject(response, ErrorCode.UNAUTHENTICATED, "invalid token");
+        if (auth == null || !auth.startsWith("Bearer ") || auth.length() == 7) {
+            reject(response, ErrorCode.UNAUTHENTICATED, "missing bearer token");
+            return;
+        }
+        Long userId;
+        String role;
+        try {
+            Claims claims = jwtService.parse(auth.substring(7));
+            Long jwtTenant = claims.get("tenantId", Long.class);
+            if (jwtTenant == null || jwtTenant.longValue() != tenantId) {
+                reject(response, ErrorCode.TENANT_MISMATCH, "token tenant mismatch");
                 return;
             }
+            userId = Long.valueOf(claims.getSubject());
+            role = claims.get("role", String.class);
+            if (userId <= 0 || role == null || role.isBlank()) {
+                reject(response, ErrorCode.UNAUTHENTICATED, "invalid token claims");
+                return;
+            }
+        } catch (Exception e) {
+            reject(response, ErrorCode.UNAUTHENTICATED, "invalid token");
+            return;
+        }
+        TenantUserEntity user = userMapper.selectById(userId);
+        if (user == null || !Long.valueOf(tenantId).equals(user.getTenantId())
+                || !TenantUserEntity.STATUS_ACTIVE.equals(user.getStatus())
+                || !role.equals(user.getRole()) || !Roles.ROLE_LEVEL.containsKey(role)) {
+            reject(response, ErrorCode.UNAUTHENTICATED, "user disabled or token identity outdated");
+            return;
         }
         try {
             TenantContext.setIdentity(tenantId, userId, role);
@@ -90,14 +108,11 @@ public class TenantFilter extends OncePerRequestFilter {
     private boolean isWhitelisted(HttpServletRequest request) {
         String path = request.getRequestURI();
         String method = request.getMethod();
-        if (path.startsWith("/actuator") || path.equals("/error")) {
+        if (path.equals("/actuator/health") || path.startsWith("/actuator/health/") || path.equals("/error")) {
             return true;
         }
         if ("POST".equals(method) && path.equals("/api/auth/login")) {
             return true;
-        }
-        if ("GET".equals(method) && path.equals("/api/agent/chat")) {
-            return true; // SSE：session 标识经 query，租户由 run 恢复（7.4）
         }
         if ("POST".equals(method)
                 && path.matches("/api/channels/(sms|email|wechat|push|console)/callback")) {
